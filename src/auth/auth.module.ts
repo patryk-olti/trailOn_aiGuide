@@ -1,4 +1,4 @@
-import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
+import { MiddlewareConsumer, Module, NestModule, RequestMethod } from '@nestjs/common';
 import { BearerAuthMiddleware } from './bearer-auth.middleware';
 
 @Module({
@@ -6,6 +6,9 @@ import { BearerAuthMiddleware } from './bearer-auth.middleware';
 })
 export class AuthModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
-    consumer.apply(BearerAuthMiddleware).forRoutes('{*path}');
+    consumer
+      .apply(BearerAuthMiddleware)
+      .exclude({ path: '/', method: RequestMethod.GET })
+      .forRoutes('{*path}');
   }
 }
