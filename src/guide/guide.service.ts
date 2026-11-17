@@ -7,6 +7,7 @@ import { RagIndexService } from '../rag/rag-index.service';
 import { RagSearchHit } from '../rag/rag.types';
 import { CreateGuideDto } from './dto/create-guide.dto';
 import { GUIDE_TOOLS, GuideToolsExecutor } from './guide.tools';
+import { LOCATION_REQUIRED_USER_HINT, messageImpliesProximity } from './guide-location.messages';
 import { GuideReply, GuideSource, GuideToolRequestContext, GuideUsage } from './guide.types';
 
 const SYSTEM_PROMPT = `Jesteś przewodnikiem AI TrailOn. Pomagasz układać trasy i korzystasz z materiałów zespołu trailON (blog, biblioteka tras, szlaki długodystansowe) oraz katalogu szczytów.
@@ -49,11 +50,21 @@ export class GuideService {
     if (dto.context?.trim()) {
       system += `\n\nDodatkowy kontekst użytkownika:\n${dto.context.trim()}`;
     }
+    const proximityWithoutLocation = !dto.location && messageImpliesProximity(dto.message);
     if (dto.location) {
       const radiusKm = dto.location.radiusKm ?? 100;
       system +=
         `\n\nPozycja użytkownika (GPS): szerokość ${dto.location.lat}, długość ${dto.location.lng}, domyślny promień szczytów ${radiusKm} km.` +
         ' Przy pytaniach o szczyty w pobliżu wywołaj search_peaks z minElevationM i ewentualnie radiusKm; nearLat/nearLng możesz pominąć — użyjemy współrzędnych z żądania.';
+    } else {
+      system +=
+        '\n\nW żądaniu brak pola location (GPS) — wyszukiwanie szczytów po odległości/promieniu jest wyłączone.';
+      if (proximityWithoutLocation) {
+        system += ` Użytkownik pyta o coś w pobliżu: nie podawaj list szczytów „najbliższych” ani odległości. Wyjaśnij po polsku: ${LOCATION_REQUIRED_USER_HINT}`;
+      } else {
+        system +=
+          ' Gdy pytanie dotyczy „w pobliżu”, promienia lub odległości w km, poproś o włączenie lokalizacji zamiast zgadywać pozycję.';
+      }
     }
     const contextBlock = this.formatPrefetch(prefetched);
     if (contextBlock) {
@@ -71,15 +82,18 @@ export class GuideService {
     let latestModel = this.defaultModel;
     let finalText = '';
     let round = 0;
-    const toolContext: GuideToolRequestContext | undefined = dto.location
-      ? {
-          location: {
-            lat: dto.location.lat,
-            lng: dto.location.lng,
-            radiusKm: dto.location.radiusKm,
-          },
-        }
-      : undefined;
+    const toolContext: GuideToolRequestContext = {
+      locationMissingForProximity: proximityWithoutLocation,
+      ...(dto.location
+        ? {
+            location: {
+              lat: dto.location.lat,
+              lng: dto.location.lng,
+              radiusKm: dto.location.radiusKm,
+            },
+          }
+        : {}),
+    };
 
     while (round <= this.maxToolRounds) {
       const result = await this.openAi.complete(messages, {

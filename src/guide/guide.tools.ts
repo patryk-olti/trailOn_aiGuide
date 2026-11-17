@@ -4,6 +4,7 @@ import { PeakRow } from '../cloudflare/d1.types';
 import { RagIndexService } from '../rag/rag-index.service';
 import { RAG_MAX_TOOL_TEXT_CHARS } from '../rag/rag.constants';
 import { RagContentSource } from '../rag/rag.constants';
+import { LOCATION_REQUIRED_TOOL_RESULT } from './guide-location.messages';
 import { GuideToolRequestContext } from './guide.types';
 
 const DEFAULT_NEARBY_RADIUS_KM = 100;
@@ -181,9 +182,27 @@ export class GuideToolsExecutor {
       params.push(maxElevation);
     }
 
-    const nearLat = readFloat(args.nearLat) ?? request?.location?.lat;
-    const nearLng = readFloat(args.nearLng) ?? request?.location?.lng;
+    const toolNearLat = readFloat(args.nearLat);
+    const toolNearLng = readFloat(args.nearLng);
+    const requestedRadius = readFloat(args.radiusKm);
+    const wantsNearby =
+      requestedRadius !== undefined || toolNearLat !== undefined || toolNearLng !== undefined;
+
+    const nearLat = toolNearLat ?? request?.location?.lat;
+    const nearLng = toolNearLng ?? request?.location?.lng;
     const hasGeo = nearLat !== undefined && nearLng !== undefined;
+
+    if ((wantsNearby || request?.locationMissingForProximity) && !hasGeo) {
+      if (toolNearLat !== undefined !== (toolNearLng !== undefined)) {
+        return {
+          text:
+            'Podano tylko jedną współrzędną (nearLat lub nearLng). Do wyszukiwania w promieniu potrzebne są obie albo pole location w żądaniu API. ' +
+            LOCATION_REQUIRED_TOOL_RESULT,
+          sourceKeys: [],
+        };
+      }
+      return { text: LOCATION_REQUIRED_TOOL_RESULT, sourceKeys: [] };
+    }
     const radiusKm = clampFloat(
       readFloat(args.radiusKm) ?? request?.location?.radiusKm ?? (hasGeo ? DEFAULT_NEARBY_RADIUS_KM : undefined),
       DEFAULT_NEARBY_RADIUS_KM,

@@ -4,6 +4,8 @@ export interface GuideToolRequestContext {
     lng: number;
     radiusKm?: number;
   };
+  /** Pytanie dotyczy odległości, a w body brak location — search_peaks nie może liczyć promienia. */
+  locationMissingForProximity?: boolean;
 }
 
 export interface GuideSource {
