@@ -1,9 +1,41 @@
+import type { ChatCompletionTool } from 'openai/resources/chat/completions';
+
+export type ChatRole = 'system' | 'user' | 'assistant' | 'tool';
+
 export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant';
+  role: ChatRole;
   content: string;
+  tool_call_id?: string;
+  tool_calls?: ToolCall[];
+}
+
+export interface ToolCall {
+  id: string;
+  name: string;
+  arguments: string;
 }
 
 export interface CompletionResult {
-  text: string;
+  text?: string;
   model: string;
+  toolCalls?: ToolCall[];
+  usage?: TokenUsage;
+  finishReason?: string;
+}
+
+export interface TokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
+export interface CompletionOptions {
+  tools?: ChatCompletionTool[];
+  toolChoice?: 'auto' | 'none';
+  maxCompletionTokens?: number;
+  temperature?: number;
+}
+
+export interface EmbedOptions {
+  dimensions?: number;
 }

@@ -11,7 +11,7 @@ export class AppController {
   root(): RootStatus {
     return {
       status: 'success',
-      version: '1.0.1',
+      version: '1.0.2',
     };
   }
 }
