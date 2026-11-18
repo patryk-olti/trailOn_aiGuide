@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { D1Service } from '../cloudflare/d1.service';
 import { OpenAiService } from '../openai/openai.service';
 import { ChatMessage, TokenUsage } from '../openai/openai.types';
+import { OpenMeteoService } from '../weather/open-meteo.service';
 import { RagIndexService } from '../rag/rag-index.service';
 import { RagSearchHit } from '../rag/rag.types';
 import { RAG_SOURCE_LOCATIONS } from '../rag/rag.constants';
@@ -24,6 +25,10 @@ Zasady źródeł (obowiązkowe):
 - Link do bloga kopiuj wyłącznie z pola url w materiale (np. https://trailon.pl/przewodnik/karkonosze/szrenica). Nie wymyślaj ani nie składaj innych adresów.
 - W treści możesz wstawić adres bloga skopiowany z pola url w danych (np. przy opisie szczytu); serwis zamieni go na link z tytułem wpisu.
 - Jeśli po narzędziach i prefetch brak wpisów — powiedz to wprost; nie uzupełniaj odpowiedzi z pamięci modelu.
+Pogoda:
+- Na pytania o pogodę, wiatr, temperaturę na szczycie lub „na weekend” wywołaj get_peak_weather (najpierw search_peaks jeśli nie masz peak_id).
+- scope=weekend gdy użytkownik pyta o sobotę, niedzielę lub wyjazd na weekend; w przeciwnym razie scope=current.
+- Opisuj wyłącznie dane z narzędzia (Open-Meteo); nie zgaduj prognozy z pamięci modelu.
 Format odpowiedzi:
 - Nie używaj HTML w treści. Zwróć zwykły tekst z akapitami (puste linie) i listami w formie myślników.
 - Sekcje i wyróżnienia oznaczaj jako **Nazwa sekcji** (podwójne gwiazdki) — serwis zamieni to na pogrubienie w HTML.
@@ -46,13 +51,14 @@ export class GuideService {
     private readonly openAi: OpenAiService,
     private readonly rag: RagIndexService,
     d1: D1Service,
+    openMeteo: OpenMeteoService,
     config: ConfigService,
   ) {
     this.maxToolRounds = config.getOrThrow<number>('RAG_TOOL_ROUND_LIMIT');
     this.maxCompletionTokens = config.getOrThrow<number>('RAG_MAX_COMPLETION_TOKENS');
     this.prefetchLimit = config.getOrThrow<number>('RAG_PREFETCH_LIMIT');
     this.defaultModel = config.getOrThrow<string>('OPENAI_MODEL');
-    this.tools = new GuideToolsExecutor(rag, d1);
+    this.tools = new GuideToolsExecutor(rag, d1, openMeteo);
   }
 
   async reply(dto: CreateGuideDto): Promise<GuideReply> {
@@ -209,8 +215,7 @@ export class GuideService {
     const contentHtml = plainTextToGuideHtml(cleaned, urlTitles, (url) =>
       this.rag.findTitleByUrl(url),
     );
-    const sourcesHtml = this.renderSourcesHtml(sources);
-    const body = sourcesHtml ? `${contentHtml}${sourcesHtml}` : contentHtml;
+    const body = contentHtml;
     return `<div class="trailon-guide-reply">${body}</div>`;
   }
 

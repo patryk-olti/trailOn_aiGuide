@@ -4,6 +4,8 @@ import { PeakRow } from '../cloudflare/d1.types';
 import { RagIndexService } from '../rag/rag-index.service';
 import { RAG_MAX_TOOL_TEXT_CHARS } from '../rag/rag.constants';
 import { RagContentSource, RAG_SOURCE_LOCATIONS } from '../rag/rag.constants';
+import { OpenMeteoService } from '../weather/open-meteo.service';
+import { runGetPeakWeather } from './guide-weather.tool';
 import { LOCATION_REQUIRED_TOOL_RESULT } from './guide-location.messages';
 import { GuideSource, GuideToolRequestContext, GuideToolResult } from './guide.types';
 
@@ -73,6 +75,29 @@ export const GUIDE_TOOLS: ChatCompletionTool[] = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'get_peak_weather',
+      description:
+        'Pobiera pogodę dla szczytu z katalogu trailON lub podanych współrzędnych. Dane z Open-Meteo (jak karta pogody w aplikacji TrailOn / repo peak). scope=current: warunki teraz; scope=weekend: prognoza na najbliższą sobotę lub niedzielę (południe, Europe/Warsaw). Używaj przy pytaniach o temperaturę, wiatr, opady i czy warto iść w góry.',
+      parameters: {
+        type: 'object',
+        properties: {
+          peak_id: { type: 'string', description: 'Identyfikator szczytu z search_peaks (peak_id).' },
+          peak_name: { type: 'string', description: 'Nazwa lub fragment nazwy szczytu.' },
+          lat: { type: 'number', description: 'Szerokość geogr. (gdy brak peak_id / peak_name).' },
+          lng: { type: 'number', description: 'Długość geogr. (gdy brak peak_id / peak_name).' },
+          scope: {
+            type: 'string',
+            enum: ['current', 'weekend'],
+            description: 'current (domyślnie) lub weekend.',
+          },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
 ];
 
 type ToolArgs = Record<string, unknown>;
@@ -81,6 +106,7 @@ export class GuideToolsExecutor {
   constructor(
     private readonly rag: RagIndexService,
     private readonly d1: D1Service,
+    private readonly weather: OpenMeteoService,
   ) {}
 
   async execute(
@@ -103,6 +129,9 @@ export class GuideToolsExecutor {
     }
     if (name === 'search_peaks') {
       return this.searchPeaks(args, request);
+    }
+    if (name === 'get_peak_weather') {
+      return runGetPeakWeather(args, this.d1, this.weather);
     }
     return { text: `Nieznane narzędzie: ${name}`, sourceKeys: [] };
   }
