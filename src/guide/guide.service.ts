@@ -9,6 +9,7 @@ import { RAG_SOURCE_LOCATIONS } from '../rag/rag.constants';
 import { CreateGuideDto } from './dto/create-guide.dto';
 import { GUIDE_TOOLS, GuideToolsExecutor } from './guide.tools';
 import { planCatalogPrefetch } from './guide-catalog.prefetch';
+import { buildUrlTitleMap, plainTextToGuideHtml, trailonGuideAnchor } from './guide-response-html';
 import { GuideReply, GuideSource, GuideToolRequestContext, GuideUsage } from './guide.types';
 
 const SYSTEM_PROMPT = `Jesteś przewodnikiem AI TrailOn. Pomagasz układać trasy i korzystasz z materiałów zespołu trailON (blog, biblioteka tras, szlaki długodystansowe) oraz katalogu szczytów w Cloudflare D1.
@@ -21,11 +22,12 @@ Zasady źródeł (obowiązkowe):
 - Jeśli do szczytu jest wpis blogowy (R2, np. blog/szrenica.json), opisuj szczyt głównie z jego zajawki i kontentu; katalog D1 traktuj jako uzupełnienie (wysokość, pasmo).
 - Jeśli opisujesz jakiś szczyt, MUSI istnieć jego URL blogowy w danych (pole url w materiale lub url bloga z katalogu). Jeśli nie ma URL — nie opisuj tego szczytu i napisz wprost, że brak wpisu blogowego.
 - Link do bloga kopiuj wyłącznie z pola url w materiale (np. https://trailon.pl/przewodnik/karkonosze/szrenica). Nie wymyślaj ani nie składaj innych adresów.
-- Nie wstawiaj żadnych URL-i w treści odpowiedzi. Linki pojawią się wyłącznie w sekcji "Źródła" dodanej przez serwis.
+- W treści możesz wstawić adres bloga skopiowany z pola url w danych (np. przy opisie szczytu); serwis zamieni go na link z tytułem wpisu.
 - Jeśli po narzędziach i prefetch brak wpisów — powiedz to wprost; nie uzupełniaj odpowiedzi z pamięci modelu.
 Format odpowiedzi:
-- Nie używaj Markdown ani HTML. Zwróć zwykły tekst z akapitami (puste linie) i ewentualnie listami w formie myślników; serwis sformatuje to do HTML.
-Nie dodawaj sekcji "Źródła" — serwis doklei ją automatycznie z dokładnych pól url.`;
+- Nie używaj HTML w treści. Zwróć zwykły tekst z akapitami (puste linie) i listami w formie myślników.
+- Sekcje i wyróżnienia oznaczaj jako **Nazwa sekcji** (podwójne gwiazdki) — serwis zamieni to na pogrubienie w HTML.
+- Nie dodawaj sekcji "Źródła" — serwis doklei ją automatycznie z dokładnych pól url.`;
 
 function isPeakSourceLabel(source: string): boolean {
   // kompatybilność wsteczna (stare wartości) + nowe "realne miejsca"
@@ -203,7 +205,10 @@ export class GuideService {
 
   private formatHtmlResponse(text: string, sources: GuideSource[]): string {
     const cleaned = this.stripTrailingSourcesSection(text).trim();
-    const contentHtml = this.textToHtml(cleaned);
+    const urlTitles = buildUrlTitleMap(sources);
+    const contentHtml = plainTextToGuideHtml(cleaned, urlTitles, (url) =>
+      this.rag.findTitleByUrl(url),
+    );
     const sourcesHtml = this.renderSourcesHtml(sources);
     const body = sourcesHtml ? `${contentHtml}${sourcesHtml}` : contentHtml;
     return `<div class="trailon-guide-reply">${body}</div>`;
@@ -270,38 +275,11 @@ export class GuideService {
     }
 
     const lis = items
-      .map((item) => {
-        const title = this.escapeHtml(item.title);
-        const url = this.escapeHtml(item.url);
-        return `<li><a href="${url}" target="_blank" rel="noopener noreferrer">${title}</a></li>`;
-      })
+      .map((item) => trailonGuideAnchor(item.url, item.title))
+      .map((anchor) => `<li>${anchor}</li>`)
       .join('');
 
     return `<h3>Źródła</h3><ul>${lis}</ul>`;
-  }
-
-  private textToHtml(text: string): string {
-    const trimmed = (text ?? '').trim();
-    if (!trimmed) {
-      return '<p></p>';
-    }
-    const paragraphs = trimmed.split(/\r?\n\s*\r?\n/g);
-    const rendered = paragraphs
-      .map((paragraph) => {
-        const safe = this.escapeHtml(paragraph).replace(/\r?\n/g, '<br/>');
-        return `<p>${safe}</p>`;
-      })
-      .join('');
-    return rendered;
-  }
-
-  private escapeHtml(value: string): string {
-    return (value ?? '')
-      .replaceAll('&', '&amp;')
-      .replaceAll('<', '&lt;')
-      .replaceAll('>', '&gt;')
-      .replaceAll('"', '&quot;')
-      .replaceAll("'", '&#39;');
   }
 
   private absorbToolResult(

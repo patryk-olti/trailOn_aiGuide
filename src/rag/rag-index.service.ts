@@ -128,6 +128,31 @@ export class RagIndexService implements OnModuleInit, OnModuleDestroy {
     return this.blogByPeakName.get(key);
   }
 
+  findTitleByUrl(url: string): string | undefined {
+    const target = this.normalizeUrlForLookup(url);
+    if (!target) {
+      return undefined;
+    }
+    const seenKeys = new Set<string>();
+    for (const entry of this.entries) {
+      if (!entry.url) {
+        continue;
+      }
+      if (this.normalizeUrlForLookup(entry.url) !== target) {
+        continue;
+      }
+      if (seenKeys.has(entry.key)) {
+        continue;
+      }
+      seenKeys.add(entry.key);
+      const title = (entry.title ?? '').trim();
+      if (title) {
+        return title;
+      }
+    }
+    return undefined;
+  }
+
   getMaterial(id: string): RagMaterialDetail | undefined {
     const found = this.entries.find((entry) => entry.chunkId === id);
     if (!found) {
@@ -210,6 +235,10 @@ export class RagIndexService implements OnModuleInit, OnModuleDestroy {
         this.blogByPeakName.set(normalizePeakName(name), ref);
       }
     }
+  }
+
+  private normalizeUrlForLookup(url: string): string {
+    return (url ?? '').trim().replace(/\/+$/, '');
   }
 
   private normalize(values: number[]): Float32Array {
