@@ -9,7 +9,6 @@ import { RAG_SOURCE_LOCATIONS } from '../rag/rag.constants';
 import { CreateGuideDto } from './dto/create-guide.dto';
 import { GUIDE_TOOLS, GuideToolsExecutor } from './guide.tools';
 import { planCatalogPrefetch } from './guide-catalog.prefetch';
-import { LOCATION_REQUIRED_USER_HINT, messageImpliesProximity } from './guide-location.messages';
 import { GuideReply, GuideSource, GuideToolRequestContext, GuideUsage } from './guide.types';
 
 const SYSTEM_PROMPT = `Jesteś przewodnikiem AI TrailOn. Pomagasz układać trasy i korzystasz z materiałów zespołu trailON (blog, biblioteka tras, szlaki długodystansowe) oraz katalogu szczytów w Cloudflare D1.
@@ -18,6 +17,7 @@ Odpowiadaj po polsku, konkretnie i praktycznie. Uwzględniaj bezpieczeństwo i r
 Zasady źródeł (obowiązkowe):
 - O szczytach i pasmach odpowiadaj WYŁĄCZNIE na podstawie: sekcji "Najbardziej pasujące materiały", "Dane z katalogu (prefetch)" oraz wyników narzędzi search_peaks i search_materials.
 - Gdy w pytaniu pada pasmo lub szczyty, najpierw korzystaj z tych danych; nie twórz listy szczytów z ogólnej wiedzy modelu.
+- W odpowiedzi domyślnie wymieniaj MAKSYMALNIE 3 szczyty. Jeśli użytkownik wyraźnie prosi o większą liczbę (np. „wymień 5 szczytów”), możesz podać więcej i dopasować limit w search_peaks.
 - Jeśli do szczytu jest wpis blogowy (R2, np. blog/szrenica.json), opisuj szczyt głównie z jego zajawki i kontentu; katalog D1 traktuj jako uzupełnienie (wysokość, pasmo).
 - Jeśli opisujesz jakiś szczyt, MUSI istnieć jego URL blogowy w danych (pole url w materiale lub url bloga z katalogu). Jeśli nie ma URL — nie opisuj tego szczytu i napisz wprost, że brak wpisu blogowego.
 - Link do bloga kopiuj wyłącznie z pola url w materiale (np. https://trailon.pl/przewodnik/karkonosze/szrenica). Nie wymyślaj ani nie składaj innych adresów.
@@ -70,21 +70,11 @@ export class GuideService {
     if (dto.context?.trim()) {
       system += `\n\nDodatkowy kontekst użytkownika:\n${dto.context.trim()}`;
     }
-    const proximityWithoutLocation = !dto.location && messageImpliesProximity(dto.message);
     if (dto.location) {
       const radiusKm = dto.location.radiusKm ?? 100;
       system +=
         `\n\nPozycja użytkownika (GPS): szerokość ${dto.location.lat}, długość ${dto.location.lng}, domyślny promień szczytów ${radiusKm} km.` +
         ' Przy pytaniach o szczyty w pobliżu wywołaj search_peaks z minElevationM i ewentualnie radiusKm; nearLat/nearLng możesz pominąć — użyjemy współrzędnych z żądania.';
-    } else {
-      system +=
-        '\n\nW żądaniu brak pola location (GPS) — wyszukiwanie szczytów po odległości/promieniu jest wyłączone.';
-      if (proximityWithoutLocation) {
-        system += ` Użytkownik pyta o coś w pobliżu: nie podawaj list szczytów „najbliższych” ani odległości. Wyjaśnij po polsku: ${LOCATION_REQUIRED_USER_HINT}`;
-      } else {
-        system +=
-          ' Gdy pytanie dotyczy „w pobliżu”, promienia lub odległości w km, poproś o włączenie lokalizacji zamiast zgadywać pozycję.';
-      }
     }
     const contextBlock = this.formatPrefetch(prefetched);
     if (contextBlock) {
@@ -101,18 +91,15 @@ export class GuideService {
     }
 
     const catalogPlan = planCatalogPrefetch(dto.message);
-    const toolContext: GuideToolRequestContext = {
-      locationMissingForProximity: proximityWithoutLocation,
-      ...(dto.location
-        ? {
-            location: {
-              lat: dto.location.lat,
-              lng: dto.location.lng,
-              radiusKm: dto.location.radiusKm,
-            },
-          }
-        : {}),
-    };
+    const toolContext: GuideToolRequestContext = dto.location
+      ? {
+          location: {
+            lat: dto.location.lat,
+            lng: dto.location.lng,
+            radiusKm: dto.location.radiusKm,
+          },
+        }
+      : {};
 
     if (catalogPlan) {
       const catalogParts: string[] = [];

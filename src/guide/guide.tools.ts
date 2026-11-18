@@ -53,7 +53,7 @@ export const GUIDE_TOOLS: ChatCompletionTool[] = [
     function: {
       name: 'search_peaks',
       description:
-        'Wyszukuje opublikowane szczyty w katalogu trailON (Cloudflare D1 / trailon_peaks_blob): nazwa, pasmo, wysokość, opis, link do blogu. Używaj range np. „Karkonosze” przy pytaniach o pasmo.',
+        'Wyszukuje opublikowane szczyty w katalogu trailON (Cloudflare D1 / trailon_peaks_blob): nazwa, pasmo, wysokość, opis, link do blogu. Używaj range np. „Karkonosze” przy pytaniach o pasmo. Domyślnie zwracaj maks. 3 szczyty (limit), chyba że użytkownik prosi o więcej.',
       parameters: {
         type: 'object',
         properties: {
@@ -67,7 +67,7 @@ export const GUIDE_TOOLS: ChatCompletionTool[] = [
             type: 'number',
             description: 'Maks. odległość od nearLat/nearLng w km (domyślnie 100 lub z żądania API).',
           },
-          limit: { type: 'integer', minimum: 1, maximum: 8 },
+          limit: { type: 'integer', minimum: 1, maximum: 20 },
         },
         additionalProperties: false,
       },
@@ -176,7 +176,7 @@ export class GuideToolsExecutor {
     request?: GuideToolRequestContext,
   ): Promise<GuideToolResult> {
     const table = this.d1.assertTableName(this.d1.peaksTable);
-    const limit = clampInt(args.limit, 5, 1, 8);
+    const limit = clampInt(args.limit, 3, 1, 20);
     const where: string[] = [`status = 'published'`];
     const params: Array<string | number | null> = [];
 
@@ -211,7 +211,7 @@ export class GuideToolsExecutor {
     const nearLng = toolNearLng ?? request?.location?.lng;
     const hasGeo = nearLat !== undefined && nearLng !== undefined;
 
-    if ((wantsNearby || request?.locationMissingForProximity) && !hasGeo) {
+    if (wantsNearby && !hasGeo) {
       if (toolNearLat !== undefined !== (toolNearLng !== undefined)) {
         return {
           text:
