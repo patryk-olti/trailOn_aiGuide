@@ -7,6 +7,7 @@ export interface RagChunkDraft {
   title: string;
   section?: string;
   url?: string;
+  peakName?: string;
   text: string;
 }
 

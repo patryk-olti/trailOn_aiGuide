@@ -50,13 +50,16 @@ function checkpointLines(items: unknown, label: string): string[] {
 }
 
 function parseBlogJson(key: string, payload: Record<string, unknown>): RagChunkDraft[] {
-  const title = readString(payload.tytul) ?? readString(payload.nazwa_szczytu) ?? key;
+  const peakName = readString(payload.nazwa_szczytu);
+  const title = readString(payload.tytul) ?? peakName ?? key;
   const url = readString(payload.url);
   const kontent = readString(payload.kontent) ?? '';
   const intro = [
+    peakName ? `Szczyt: ${peakName}` : undefined,
     readString(payload.zajawka),
     readString(payload.seo_opis),
     readString(payload.pasmo) ? `Pasmo: ${readString(payload.pasmo)}` : undefined,
+    url ? `URL bloga: ${url}` : undefined,
   ]
     .filter((line): line is string => typeof line === 'string')
     .join('\n');
@@ -67,6 +70,7 @@ function parseBlogJson(key: string, payload: Record<string, unknown>): RagChunkD
     key,
     title,
     url,
+    peakName,
     text,
   });
 }
@@ -161,7 +165,11 @@ export function parseR2JsonObject(key: string, rawJson: string): RagChunkDraft[]
   return [];
 }
 
-export function embeddingInputForChunk(chunk: Pick<RagChunkDraft, 'title' | 'section' | 'text' | 'source'>): string {
-  const header = [chunk.title, chunk.section, `Źródło: ${chunk.source}`].filter(Boolean).join(' | ');
+export function embeddingInputForChunk(
+  chunk: Pick<RagChunkDraft, 'title' | 'section' | 'text' | 'source' | 'peakName'>,
+): string {
+  const header = [chunk.peakName, chunk.title, chunk.section, `Źródło: ${chunk.source}`]
+    .filter(Boolean)
+    .join(' | ');
   return `${header}\n${chunk.text}`.trim();
 }

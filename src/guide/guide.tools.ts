@@ -280,32 +280,55 @@ export class GuideToolsExecutor {
 
     const sources: GuideSource[] = [];
     const lines: string[] = [];
+    const sourceKeys: string[] = [];
     let embeddingCalls = 0;
     for (const row of rows) {
-      let blogUrl = blogUrlFromTags(row.tags_json);
+      const blogPost = this.rag.findBlogForPeakName(row.name);
+      let blogUrl = blogPost?.url ?? blogUrlFromTags(row.tags_json);
       if (!blogUrl) {
         blogUrl = await this.findBlogUrlForPeak(row.name, row.range_name, blogLinkMinScore);
         embeddingCalls += 1;
       }
+
       sources.push({
         id: row.peak_id,
         title: row.name,
         source: 'szczyty',
         url: blogUrl,
       });
+      sourceKeys.push(`peak:${row.peak_id}`);
+
+      let blogExcerpt = '';
+      if (blogPost) {
+        if (!blogUrl && blogPost.url) {
+          blogUrl = blogPost.url;
+        }
+        sources.push({
+          id: blogPost.chunkId,
+          title: blogPost.title,
+          source: 'blog',
+          url: blogPost.url,
+        });
+        sourceKeys.push(blogPost.chunkId);
+        const material = this.rag.getMaterial(blogPost.chunkId);
+        if (material) {
+          blogExcerpt = `\nMateriał blogowy (priorytet — użyj tej treści i dokładnego URL): ${blogPost.url ?? 'brak url'}\n${truncate(material.content, 520)}`;
+        }
+      }
+
       const description = row.description ? truncate(row.description, 240) : 'Brak opisu.';
       const distance =
         typeof row.distance_km === 'number'
           ? ` | ~${row.distance_km.toFixed(1)} km`
           : '';
-      const blogPart = blogUrl ? ` | blog: ${blogUrl}` : '';
+      const blogPart = blogUrl ? ` | url bloga (kopiuj dosłownie): ${blogUrl}` : '';
       lines.push(
-        `${row.name} (${row.elevation_m} m, ${row.range_name}${distance}) | id=${row.peak_id}${blogPart}\n${description}`,
+        `${row.name} (${row.elevation_m} m, ${row.range_name}${distance}) | id=${row.peak_id}${blogPart}\nKatalog D1: ${description}${blogExcerpt}`,
       );
     }
     return {
       text: truncate(lines.join('\n\n'), RAG_MAX_TOOL_TEXT_CHARS),
-      sourceKeys: rows.map((row) => `peak:${row.peak_id}`),
+      sourceKeys,
       sources,
       embeddingCalls,
     };
@@ -316,6 +339,10 @@ export class GuideToolsExecutor {
     rangeName: string,
     minScore: number,
   ): Promise<string | undefined> {
+    const fromIndex = this.rag.findBlogForPeakName(name);
+    if (fromIndex?.url) {
+      return fromIndex.url;
+    }
     const hits = await this.rag.searchByQuery(`${name} ${rangeName}`, {
       source: 'blog',
       limit: 3,

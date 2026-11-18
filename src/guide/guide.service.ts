@@ -17,9 +17,10 @@ Odpowiadaj po polsku, konkretnie i praktycznie. Uwzględniaj bezpieczeństwo i r
 Zasady źródeł (obowiązkowe):
 - O szczytach i pasmach odpowiadaj WYŁĄCZNIE na podstawie: sekcji "Najbardziej pasujące materiały", "Dane z katalogu (prefetch)" oraz wyników narzędzi search_peaks i search_materials.
 - Gdy w pytaniu pada pasmo lub szczyty, najpierw korzystaj z tych danych; nie twórz listy szczytów z ogólnej wiedzy modelu.
-- Każdy szczyt z katalogu, który polecasz, opisz według description z bazy; przy nim podaj link do wpisu na blogu (pole blog: / url), jeśli jest w danych.
+- Jeśli do szczytu jest wpis blogowy (R2, np. blog/szrenica.json), opisuj szczyt głównie z jego zajawki i kontentu; katalog D1 traktuj jako uzupełnienie (wysokość, pasmo).
+- Link do bloga kopiuj wyłącznie z pola url w materiale (np. https://trailon.pl/przewodnik/karkonosze/szrenica). Nie wymyślaj ani nie składaj innych adresów.
 - Jeśli po narzędziach i prefetch brak wpisów — powiedz to wprost; nie uzupełniaj odpowiedzi z pamięci modelu.
-Na końcu podaj sekcję "Źródła" z tytułami i linkami HTTP do bloga, gdy są dostępne.`;
+Na końcu podaj sekcję "Źródła" z tytułami i dokładnymi linkami url z materiałów.`;
 
 @Injectable()
 export class GuideService {

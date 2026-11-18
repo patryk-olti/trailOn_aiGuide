@@ -2,6 +2,7 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/commo
 import { ConfigService } from '@nestjs/config';
 import { R2Service } from '../cloudflare/r2.service';
 import { OpenAiService } from '../openai/openai.service';
+import { BlogPostRef, normalizePeakName, peakNamesForBlogEntry } from './rag-blog-lookup';
 import { RAG_INDEX_REFRESH_MS, RagContentSource } from './rag.constants';
 import { RagIndexEntry, RagIndexFile, RagMaterialDetail, RagSearchHit } from './rag.types';
 
@@ -18,6 +19,7 @@ export class RagIndexService implements OnModuleInit, OnModuleDestroy {
   private readonly dimensions: number;
 
   private entries: LoadedEntry[] = [];
+  private blogByPeakName = new Map<string, BlogPostRef>();
   private loaded = false;
   private currentEtag: string | undefined;
   private refreshTimer: NodeJS.Timeout | undefined;
@@ -96,6 +98,14 @@ export class RagIndexService implements OnModuleInit, OnModuleDestroy {
     return hits;
   }
 
+  findBlogForPeakName(peakName: string): BlogPostRef | undefined {
+    const key = normalizePeakName(peakName);
+    if (key.length === 0) {
+      return undefined;
+    }
+    return this.blogByPeakName.get(key);
+  }
+
   getMaterial(id: string): RagMaterialDetail | undefined {
     const found = this.entries.find((entry) => entry.chunkId === id);
     if (!found) {
@@ -139,14 +149,44 @@ export class RagIndexService implements OnModuleInit, OnModuleDestroy {
           ...entry,
           vector: this.normalize(entry.embedding),
         }));
+      this.rebuildBlogPeakIndex();
       this.currentEtag = body.etag;
       this.loaded = true;
       this.logger.log(`Załadowano indeks RAG: ${this.entries.length} fragmentów.`);
     } catch (error) {
       this.loaded = true;
       this.entries = [];
+      this.blogByPeakName.clear();
       const message = error instanceof Error ? error.message : 'unknown error';
       this.logger.warn(`Indeks RAG niedostępny (${this.indexKey}): ${message}`);
+    }
+  }
+
+  private rebuildBlogPeakIndex(): void {
+    this.blogByPeakName.clear();
+    const firstChunkByKey = new Map<string, LoadedEntry>();
+    for (const entry of this.entries) {
+      if (entry.source !== 'blog') {
+        continue;
+      }
+      const existing = firstChunkByKey.get(entry.key);
+      if (!existing || entry.chunkId.localeCompare(existing.chunkId) < 0) {
+        firstChunkByKey.set(entry.key, entry);
+      }
+    }
+    for (const entry of firstChunkByKey.values()) {
+      const names = peakNamesForBlogEntry(entry.key, entry.title);
+      const primaryPeak = names[0] ?? entry.title;
+      const ref: BlogPostRef = {
+        key: entry.key,
+        chunkId: entry.chunkId,
+        title: entry.title,
+        url: entry.url,
+        peakName: primaryPeak,
+      };
+      for (const name of names) {
+        this.blogByPeakName.set(normalizePeakName(name), ref);
+      }
     }
   }
 
