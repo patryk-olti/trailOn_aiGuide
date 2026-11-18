@@ -282,6 +282,8 @@ export class GuideToolsExecutor {
     const lines: string[] = [];
     const sourceKeys: string[] = [];
     let embeddingCalls = 0;
+
+    const resolved = [];
     for (const row of rows) {
       const blogPost = this.rag.findBlogForPeakName(row.name);
       let blogUrl = blogPost?.url ?? blogUrlFromTags(row.tags_json);
@@ -289,20 +291,32 @@ export class GuideToolsExecutor {
         blogUrl = await this.findBlogUrlForPeak(row.name, row.range_name, blogLinkMinScore);
         embeddingCalls += 1;
       }
+      resolved.push({ row, blogPost, blogUrl });
+    }
 
-      sources.push({
-        id: row.peak_id,
-        title: row.name,
-        source: 'szczyty',
-        url: blogUrl,
-      });
+    // Jeśli mamy jakiekolwiek wpisy blogowe, zwracamy tylko te szczyty — to źródło prawdy.
+    const withBlog = resolved.filter((entry) => Boolean(entry.blogUrl));
+    const chosen = withBlog.length > 0 ? withBlog : resolved;
+
+    for (const { row, blogPost, blogUrl } of chosen) {
+      if (blogUrl) {
+        sources.push({
+          id: row.peak_id,
+          title: row.name,
+          source: 'szczyty',
+          url: blogUrl,
+        });
+      } else {
+        sources.push({
+          id: row.peak_id,
+          title: row.name,
+          source: 'szczyty',
+        });
+      }
       sourceKeys.push(`peak:${row.peak_id}`);
 
       let blogExcerpt = '';
       if (blogPost) {
-        if (!blogUrl && blogPost.url) {
-          blogUrl = blogPost.url;
-        }
         sources.push({
           id: blogPost.chunkId,
           title: blogPost.title,

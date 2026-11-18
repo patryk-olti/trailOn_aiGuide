@@ -20,11 +20,17 @@ export function peakNameFromBlogKey(key: string): string | undefined {
   if (!match) {
     return undefined;
   }
-  const slug = match[1].trim();
+  const slugPath = match[1].trim();
+  if (slugPath.length === 0) {
+    return undefined;
+  }
+  const lastSegment = slugPath.split('/').filter(Boolean).pop() ?? '';
+  const slug = decodeURIComponent(lastSegment).trim();
   if (slug.length === 0) {
     return undefined;
   }
-  return slug.charAt(0).toLocaleUpperCase('pl-PL') + slug.slice(1);
+  const normalized = slug.replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return normalized.charAt(0).toLocaleUpperCase('pl-PL') + normalized.slice(1);
 }
 
 export function peakNameFromBlogTitle(title: string): string | undefined {

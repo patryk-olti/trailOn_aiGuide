@@ -18,9 +18,11 @@ Zasady źródeł (obowiązkowe):
 - O szczytach i pasmach odpowiadaj WYŁĄCZNIE na podstawie: sekcji "Najbardziej pasujące materiały", "Dane z katalogu (prefetch)" oraz wyników narzędzi search_peaks i search_materials.
 - Gdy w pytaniu pada pasmo lub szczyty, najpierw korzystaj z tych danych; nie twórz listy szczytów z ogólnej wiedzy modelu.
 - Jeśli do szczytu jest wpis blogowy (R2, np. blog/szrenica.json), opisuj szczyt głównie z jego zajawki i kontentu; katalog D1 traktuj jako uzupełnienie (wysokość, pasmo).
+- Jeśli opisujesz jakiś szczyt, MUSI istnieć jego URL blogowy w danych (pole url w materiale lub url bloga z katalogu). Jeśli nie ma URL — nie opisuj tego szczytu i napisz wprost, że brak wpisu blogowego.
 - Link do bloga kopiuj wyłącznie z pola url w materiale (np. https://trailon.pl/przewodnik/karkonosze/szrenica). Nie wymyślaj ani nie składaj innych adresów.
+- Nie wstawiaj żadnych URL-i w treści odpowiedzi. Linki pojawią się wyłącznie w sekcji "Źródła" dodanej przez serwis.
 - Jeśli po narzędziach i prefetch brak wpisów — powiedz to wprost; nie uzupełniaj odpowiedzi z pamięci modelu.
-Na końcu podaj sekcję "Źródła" z tytułami i dokładnymi linkami url z materiałów.`;
+Nie dodawaj sekcji "Źródła" — serwis doklei ją automatycznie z dokładnych pól url.`;
 
 @Injectable()
 export class GuideService {
@@ -192,12 +194,84 @@ export class GuideService {
         'Nie udało się przygotować odpowiedzi. Spróbuj przeformułować pytanie lub zawęzić temat.';
     }
 
+    const sources = this.buildSources([...sourceIds], prefetched, resolvedSources);
     return {
-      reply: finalText,
+      reply: this.withSourcesSection(finalText, sources),
       model: latestModel,
-      sources: this.buildSources([...sourceIds], prefetched, resolvedSources),
+      sources,
       usage,
     };
+  }
+
+  private withSourcesSection(text: string, sources: GuideSource[]): string {
+    const cleaned = this.stripTrailingSourcesSection(text).trim();
+    const section = this.renderSourcesSection(sources);
+    if (!section) {
+      return cleaned;
+    }
+    return `${cleaned}\n\n${section}`.trim();
+  }
+
+  private stripTrailingSourcesSection(text: string): string {
+    // Model czasem generuje "Źródła" i potrafi wymyślać URL-e. Usuwamy WYŁĄCZNIE końcową sekcję.
+    const input = text ?? '';
+    const re = /(^|\n)#{0,3}\s*Źródła\b/gi;
+    let lastStart: number | undefined;
+    let match: RegExpExecArray | null;
+    // eslint-disable-next-line no-cond-assign
+    while ((match = re.exec(input))) {
+      lastStart = match.index + (match[1]?.length ?? 0);
+    }
+    if (lastStart === undefined) {
+      return input;
+    }
+    // Bezpiecznik: wycinamy tylko jeśli "Źródła" są blisko końca (typowo to ostatnia sekcja).
+    if (lastStart < Math.max(0, input.length - 2000)) {
+      return input;
+    }
+    return input.slice(0, lastStart).trimEnd();
+  }
+
+  private renderSourcesSection(sources: GuideSource[]): string {
+    const lines: string[] = [];
+    const seen = new Set<string>();
+
+    const push = (title: string, url: string): void => {
+      const safeTitle = (title || '').trim() || 'Materiał';
+      const safeUrl = url.trim();
+      if (!safeUrl) {
+        return;
+      }
+      // Źródłem prawdy są linki trailON (z pól url w blogu/katalogu), nie linki "z internetu".
+      if (!safeUrl.startsWith('https://trailon.pl/')) {
+        return;
+      }
+      if (seen.has(safeUrl)) {
+        return;
+      }
+      seen.add(safeUrl);
+      lines.push(`- [${safeTitle}](${safeUrl})`);
+    };
+
+    // Priorytet: szczyty (żeby było 1:1 link do każdego opisywanego szczytu).
+    for (const source of sources) {
+      if (source.source === 'szczyty' && source.url) {
+        push(source.title, source.url);
+      }
+    }
+    // Fallback: materiały (blog/trasy), jeśli nie ma szczytów z URL.
+    if (lines.length === 0) {
+      for (const source of sources) {
+        if (source.source !== 'szczyty' && source.url) {
+          push(source.title, source.url);
+        }
+      }
+    }
+
+    if (lines.length === 0) {
+      return '';
+    }
+    return `### Źródła\n${lines.join('\n')}`.trim();
   }
 
   private absorbToolResult(
