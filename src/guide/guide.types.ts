@@ -29,7 +29,7 @@ export interface GuideUsage {
 }
 
 export interface GuideReply {
-  reply: string;
+  response: string;
   model: string;
   sources: GuideSource[];
   usage: GuideUsage;

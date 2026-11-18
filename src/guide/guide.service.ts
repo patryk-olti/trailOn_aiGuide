@@ -23,6 +23,8 @@ Zasady źródeł (obowiązkowe):
 - Link do bloga kopiuj wyłącznie z pola url w materiale (np. https://trailon.pl/przewodnik/karkonosze/szrenica). Nie wymyślaj ani nie składaj innych adresów.
 - Nie wstawiaj żadnych URL-i w treści odpowiedzi. Linki pojawią się wyłącznie w sekcji "Źródła" dodanej przez serwis.
 - Jeśli po narzędziach i prefetch brak wpisów — powiedz to wprost; nie uzupełniaj odpowiedzi z pamięci modelu.
+Format odpowiedzi:
+- Nie używaj Markdown ani HTML. Zwróć zwykły tekst z akapitami (puste linie) i ewentualnie listami w formie myślników; serwis sformatuje to do HTML.
 Nie dodawaj sekcji "Źródła" — serwis doklei ją automatycznie z dokładnych pól url.`;
 
 function isPeakSourceLabel(source: string): boolean {
@@ -192,20 +194,19 @@ export class GuideService {
 
     const sources = this.buildSources([...sourceIds], prefetched, resolvedSources);
     return {
-      reply: this.withSourcesSection(finalText, sources),
+      response: this.formatHtmlResponse(finalText, sources),
       model: latestModel,
       sources,
       usage,
     };
   }
 
-  private withSourcesSection(text: string, sources: GuideSource[]): string {
+  private formatHtmlResponse(text: string, sources: GuideSource[]): string {
     const cleaned = this.stripTrailingSourcesSection(text).trim();
-    const section = this.renderSourcesSection(sources);
-    if (!section) {
-      return cleaned;
-    }
-    return `${cleaned}\n\n${section}`.trim();
+    const contentHtml = this.textToHtml(cleaned);
+    const sourcesHtml = this.renderSourcesHtml(sources);
+    const body = sourcesHtml ? `${contentHtml}${sourcesHtml}` : contentHtml;
+    return `<div class="trailon-guide-reply">${body}</div>`;
   }
 
   private stripTrailingSourcesSection(text: string): string {
@@ -228,13 +229,13 @@ export class GuideService {
     return input.slice(0, lastStart).trimEnd();
   }
 
-  private renderSourcesSection(sources: GuideSource[]): string {
-    const lines: string[] = [];
+  private renderSourcesHtml(sources: GuideSource[]): string {
+    const items: Array<{ title: string; url: string }> = [];
     const seen = new Set<string>();
 
     const push = (title: string, url: string): void => {
       const safeTitle = (title || '').trim() || 'Materiał';
-      const safeUrl = url.trim();
+      const safeUrl = (url || '').trim();
       if (!safeUrl) {
         return;
       }
@@ -246,7 +247,7 @@ export class GuideService {
         return;
       }
       seen.add(safeUrl);
-      lines.push(`- [${safeTitle}](${safeUrl})`);
+      items.push({ title: safeTitle, url: safeUrl });
     };
 
     // Priorytet: szczyty (żeby było 1:1 link do każdego opisywanego szczytu).
@@ -256,7 +257,7 @@ export class GuideService {
       }
     }
     // Fallback: materiały (blog/trasy), jeśli nie ma szczytów z URL.
-    if (lines.length === 0) {
+    if (items.length === 0) {
       for (const source of sources) {
         if (!isPeakSourceLabel(source.source) && source.url) {
           push(source.title, source.url);
@@ -264,10 +265,43 @@ export class GuideService {
       }
     }
 
-    if (lines.length === 0) {
+    if (items.length === 0) {
       return '';
     }
-    return `### Źródła\n${lines.join('\n')}`.trim();
+
+    const lis = items
+      .map((item) => {
+        const title = this.escapeHtml(item.title);
+        const url = this.escapeHtml(item.url);
+        return `<li><a href="${url}" target="_blank" rel="noopener noreferrer">${title}</a></li>`;
+      })
+      .join('');
+
+    return `<h3>Źródła</h3><ul>${lis}</ul>`;
+  }
+
+  private textToHtml(text: string): string {
+    const trimmed = (text ?? '').trim();
+    if (!trimmed) {
+      return '<p></p>';
+    }
+    const paragraphs = trimmed.split(/\r?\n\s*\r?\n/g);
+    const rendered = paragraphs
+      .map((paragraph) => {
+        const safe = this.escapeHtml(paragraph).replace(/\r?\n/g, '<br/>');
+        return `<p>${safe}</p>`;
+      })
+      .join('');
+    return rendered;
+  }
+
+  private escapeHtml(value: string): string {
+    return (value ?? '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
   }
 
   private absorbToolResult(
