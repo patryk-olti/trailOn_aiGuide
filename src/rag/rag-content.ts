@@ -128,6 +128,37 @@ function parseLongDistanceJson(key: string, payload: Record<string, unknown>): R
   });
 }
 
+function parsePeakJson(key: string, payload: Record<string, unknown>): RagChunkDraft[] {
+  const name = readString(payload.nazwa) ?? readString(payload.name);
+  const range = readString(payload.pasmo) ?? readString(payload.range_name);
+  const elevation =
+    readNumber(payload.wysokosc_m) ??
+    readNumber(payload.elevation_m) ??
+    readNumber(payload.elevation);
+  const url = readString(payload.url) ?? readString(payload.blog_url) ?? readString(payload.blogUrl);
+  const description = readString(payload.opis) ?? readString(payload.description) ?? '';
+
+  const title = name ?? key;
+  const summary = [
+    name ? `Szczyt: ${name}` : undefined,
+    range ? `Pasmo: ${range}` : undefined,
+    typeof elevation === 'number' ? `Wysokość: ${elevation} m n.p.m.` : undefined,
+    url ? `URL: ${url}` : undefined,
+  ]
+    .filter((line): line is string => typeof line === 'string')
+    .join('\n');
+
+  const text = [summary, description].filter((part) => part.length > 0).join('\n\n');
+  return expandChunkDrafts({
+    source: 'szczyty',
+    key,
+    title,
+    url,
+    peakName: name,
+    text,
+  });
+}
+
 export function sourceFromKey(key: string): RagContentSource | undefined {
   if (key.startsWith('blog/')) {
     return 'blog';
@@ -137,6 +168,9 @@ export function sourceFromKey(key: string): RagContentSource | undefined {
   }
   if (key.startsWith('szlaki-dlugodystansowe/')) {
     return 'szlaki-dlugodystansowe';
+  }
+  if (key.startsWith('szczyty/')) {
+    return 'szczyty';
   }
   return undefined;
 }
@@ -161,6 +195,9 @@ export function parseR2JsonObject(key: string, rawJson: string): RagChunkDraft[]
   }
   if (source === 'szlaki-dlugodystansowe') {
     return parseLongDistanceJson(key, record);
+  }
+  if (source === 'szczyty') {
+    return parsePeakJson(key, record);
   }
   return [];
 }

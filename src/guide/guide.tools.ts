@@ -3,7 +3,7 @@ import { D1Service } from '../cloudflare/d1.service';
 import { PeakRow } from '../cloudflare/d1.types';
 import { RagIndexService } from '../rag/rag-index.service';
 import { RAG_MAX_TOOL_TEXT_CHARS } from '../rag/rag.constants';
-import { RagContentSource } from '../rag/rag.constants';
+import { RagContentSource, RAG_SOURCE_LOCATIONS } from '../rag/rag.constants';
 import { LOCATION_REQUIRED_TOOL_RESULT } from './guide-location.messages';
 import { GuideSource, GuideToolRequestContext, GuideToolResult } from './guide.types';
 
@@ -114,7 +114,11 @@ export class GuideToolsExecutor {
     }
     const limit = clampInt(args.limit, 3, 1, 6);
     const source = readSource(args.source);
-    const hits = await this.rag.searchByQuery(query, { source, limit });
+    const hits = await this.rag.searchByQuery(query, {
+      source,
+      sources: source ? undefined : ['blog', 'biblioteka-tras', 'szlaki-dlugodystansowe'],
+      limit,
+    });
     if (hits.length === 0) {
       return { text: 'Brak trafień w materiałach trailON.', sourceKeys: [] };
     }
@@ -130,7 +134,7 @@ export class GuideToolsExecutor {
       sources: hits.map((hit) => ({
         id: hit.id,
         title: hit.title,
-        source: hit.source,
+        source: RAG_SOURCE_LOCATIONS[hit.source],
         url: hit.url,
       })),
     };
@@ -149,7 +153,7 @@ export class GuideToolsExecutor {
       material.title,
       material.section,
       material.url,
-      `Źródło: ${material.source}`,
+      `Źródło: ${RAG_SOURCE_LOCATIONS[material.source]}`,
     ]
       .filter(Boolean)
       .join(' | ');
@@ -160,7 +164,7 @@ export class GuideToolsExecutor {
         {
           id: material.id,
           title: material.title,
-          source: material.source,
+          source: RAG_SOURCE_LOCATIONS[material.source],
           url: material.url,
         },
       ],
@@ -303,14 +307,14 @@ export class GuideToolsExecutor {
         sources.push({
           id: row.peak_id,
           title: row.name,
-          source: 'szczyty',
+          source: RAG_SOURCE_LOCATIONS.szczyty,
           url: blogUrl,
         });
       } else {
         sources.push({
           id: row.peak_id,
           title: row.name,
-          source: 'szczyty',
+          source: RAG_SOURCE_LOCATIONS.szczyty,
         });
       }
       sourceKeys.push(`peak:${row.peak_id}`);
@@ -320,7 +324,7 @@ export class GuideToolsExecutor {
         sources.push({
           id: blogPost.chunkId,
           title: blogPost.title,
-          source: 'blog',
+          source: RAG_SOURCE_LOCATIONS.blog,
           url: blogPost.url,
         });
         sourceKeys.push(blogPost.chunkId);

@@ -54,7 +54,12 @@ export class RagIndexService implements OnModuleInit, OnModuleDestroy {
 
   async searchByQuery(
     query: string,
-    options?: { source?: RagContentSource; limit?: number; minScore?: number },
+    options?: {
+      source?: RagContentSource;
+      sources?: RagContentSource[];
+      limit?: number;
+      minScore?: number;
+    },
   ): Promise<RagSearchHit[]> {
     if (!this.loaded || this.entries.length === 0) {
       return [];
@@ -69,7 +74,12 @@ export class RagIndexService implements OnModuleInit, OnModuleDestroy {
 
   searchByVector(
     vector: number[],
-    options?: { source?: RagContentSource; limit?: number; minScore?: number },
+    options?: {
+      source?: RagContentSource;
+      sources?: RagContentSource[];
+      limit?: number;
+      minScore?: number;
+    },
   ): RagSearchHit[] {
     if (!this.loaded || this.entries.length === 0) {
       return [];
@@ -78,9 +88,21 @@ export class RagIndexService implements OnModuleInit, OnModuleDestroy {
     const limit = options?.limit ?? this.defaultLimit;
     const minScore = options?.minScore ?? this.minScore;
     const source = options?.source;
+    const sources = Array.isArray(options?.sources) ? options?.sources : undefined;
+    const sourceFilter =
+      source ??
+      (sources && sources.length > 0 ? sources : undefined);
 
     const hits = this.entries
-      .filter((entry) => (source ? entry.source === source : true))
+      .filter((entry) => {
+        if (!sourceFilter) {
+          return true;
+        }
+        if (typeof sourceFilter === 'string') {
+          return entry.source === sourceFilter;
+        }
+        return sourceFilter.includes(entry.source);
+      })
       .map((entry) => ({
         id: entry.chunkId,
         source: entry.source,

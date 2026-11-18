@@ -1,5 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { createHash } from 'crypto';
+import { D1Service } from '../cloudflare/d1.service';
+import { PeakRow } from '../cloudflare/d1.types';
 import { R2Service } from '../cloudflare/r2.service';
 import { OpenAiService } from '../openai/openai.service';
 import {
@@ -27,6 +30,7 @@ export class RagIndexerService {
   constructor(
     private readonly config: ConfigService,
     private readonly r2: R2Service,
+    private readonly d1: D1Service,
     private readonly openAi: OpenAiService,
   ) {
     this.indexKey = this.config.getOrThrow<string>('RAG_INDEX_KEY');
@@ -35,6 +39,7 @@ export class RagIndexerService {
   }
 
   async buildIndex(): Promise<RagIndexBuildResult> {
+    await this.syncPeaksToR2();
     const previous = await this.loadExistingIndex();
     const sourceEtags: Record<string, string> = { ...previous?.sourceEtags };
     const entriesByKey = new Map<string, RagIndexEntry[]>();
@@ -53,7 +58,11 @@ export class RagIndexerService {
       await Promise.all(RAG_CONTENT_PREFIXES.map((prefix) => this.r2.listObjects(prefix)))
     )
       .flat()
-      .filter((object) => object.key.endsWith('.json'));
+      .filter((object) => object.key.endsWith('.json'))
+      .filter((object) => {
+        const last = object.key.split('/').filter(Boolean).pop() ?? '';
+        return !last.startsWith('_');
+      });
 
     for (const object of allKeys) {
       const etag = object.etag ?? '';
@@ -104,6 +113,93 @@ export class RagIndexerService {
     };
   }
 
+  private async syncPeaksToR2(): Promise<void> {
+    const table = this.d1.assertTableName(this.d1.peaksTable);
+    let peaks: PeakRow[] = [];
+    try {
+      peaks = await this.d1.query<PeakRow>(
+        `SELECT peak_id, name, elevation_m, range_name, lat, lng, tags_json, description, status, recommended
+         FROM ${table}
+         WHERE status = 'published'`,
+      );
+    } catch (error) {
+      // Indeks materiałów z R2 ma działać nawet jeśli D1 jest niedostępne.
+      const message = error instanceof Error ? error.message : 'unknown error';
+      this.logger.warn(`Pominięto synchronizację szczytów z D1: ${message}`);
+      return;
+    }
+
+    const manifestKey = 'szczyty/_manifest.json';
+    type Manifest = { version: 1; updatedAt: string; hashes: Record<string, string> };
+    let manifest: Manifest = { version: 1, updatedAt: new Date().toISOString(), hashes: {} };
+    try {
+      const existing = await this.r2.getText(manifestKey);
+      const parsed = JSON.parse(existing.text) as Manifest;
+      if (parsed && parsed.version === 1 && parsed.hashes && typeof parsed.hashes === 'object') {
+        manifest = parsed;
+      }
+    } catch {
+      // brak manifestu - ok
+    }
+
+    const desired = new Map<string, { json: string; hash: string }>();
+    for (const row of peaks) {
+      if (!row?.peak_id) {
+        continue;
+      }
+      const key = `szczyty/${row.peak_id}.json`;
+      const url = blogUrlFromTags(row.tags_json);
+      const payload = {
+        peak_id: row.peak_id,
+        name: row.name,
+        elevation_m: row.elevation_m,
+        range_name: row.range_name,
+        lat: row.lat,
+        lng: row.lng,
+        tags_json: row.tags_json,
+        description: row.description,
+        status: row.status,
+        recommended: row.recommended,
+        url,
+      };
+      const json = `${JSON.stringify(payload)}\n`;
+      const hash = sha256(json);
+      desired.set(key, { json, hash });
+    }
+
+    let updated = 0;
+    let deleted = 0;
+
+    for (const [key, entry] of desired.entries()) {
+      if (manifest.hashes[key] === entry.hash) {
+        continue;
+      }
+      await this.r2.putText(key, entry.json);
+      manifest.hashes[key] = entry.hash;
+      updated += 1;
+    }
+
+    const desiredKeys = new Set(desired.keys());
+    for (const existingKey of Object.keys(manifest.hashes)) {
+      if (!existingKey.startsWith('szczyty/') || existingKey === manifestKey) {
+        continue;
+      }
+      if (desiredKeys.has(existingKey)) {
+        continue;
+      }
+      await this.r2.deleteObject(existingKey);
+      delete manifest.hashes[existingKey];
+      deleted += 1;
+    }
+
+    manifest.updatedAt = new Date().toISOString();
+    await this.r2.putText(manifestKey, `${JSON.stringify(manifest)}\n`);
+
+    if (updated > 0 || deleted > 0) {
+      this.logger.log(`Zsynchronizowano szczyty z D1 → R2: zapisano ${updated}, usunięto ${deleted}.`);
+    }
+  }
+
   private async embedDrafts(drafts: RagChunkDraft[]): Promise<RagIndexEntry[]> {
     const result: RagIndexEntry[] = [];
     for (let start = 0; start < drafts.length; start += RAG_EMBED_BATCH_SIZE) {
@@ -136,5 +232,30 @@ export class RagIndexerService {
     } catch {
       return undefined;
     }
+  }
+}
+
+function sha256(input: string): string {
+  return createHash('sha256').update(input).digest('hex');
+}
+
+function blogUrlFromTags(tagsJson: string | null | undefined): string | undefined {
+  if (!tagsJson?.trim()) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(tagsJson) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return undefined;
+    }
+    const record = parsed as Record<string, unknown>;
+    const value = record.url ?? record.blog_url ?? record.blogUrl;
+    if (typeof value !== 'string') {
+      return undefined;
+    }
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  } catch {
+    return undefined;
   }
 }

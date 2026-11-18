@@ -1,4 +1,5 @@
 import {
+  DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
   ListObjectsV2Command,
@@ -109,6 +110,21 @@ export class R2Service {
       const message = error instanceof Error ? error.message : 'R2 put failed';
       this.logger.error(`${message} (${key})`);
       throw new BadGatewayException(`Nie udało się zapisać pliku R2: ${key}`);
+    }
+  }
+
+  async deleteObject(key: string): Promise<void> {
+    try {
+      await this.client.send(
+        new DeleteObjectCommand({
+          Bucket: this.bucket,
+          Key: key,
+        }),
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'R2 delete failed';
+      this.logger.error(`${message} (${key})`);
+      throw new BadGatewayException(`Nie udało się usunąć pliku R2: ${key}`);
     }
   }
 

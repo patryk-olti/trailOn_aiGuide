@@ -5,6 +5,7 @@ import { OpenAiService } from '../openai/openai.service';
 import { ChatMessage, TokenUsage } from '../openai/openai.types';
 import { RagIndexService } from '../rag/rag-index.service';
 import { RagSearchHit } from '../rag/rag.types';
+import { RAG_SOURCE_LOCATIONS } from '../rag/rag.constants';
 import { CreateGuideDto } from './dto/create-guide.dto';
 import { GUIDE_TOOLS, GuideToolsExecutor } from './guide.tools';
 import { planCatalogPrefetch } from './guide-catalog.prefetch';
@@ -23,6 +24,11 @@ Zasady źródeł (obowiązkowe):
 - Nie wstawiaj żadnych URL-i w treści odpowiedzi. Linki pojawią się wyłącznie w sekcji "Źródła" dodanej przez serwis.
 - Jeśli po narzędziach i prefetch brak wpisów — powiedz to wprost; nie uzupełniaj odpowiedzi z pamięci modelu.
 Nie dodawaj sekcji "Źródła" — serwis doklei ją automatycznie z dokładnych pól url.`;
+
+function isPeakSourceLabel(source: string): boolean {
+  // kompatybilność wsteczna (stare wartości) + nowe "realne miejsca"
+  return source === 'szczyty' || source === RAG_SOURCE_LOCATIONS.szczyty;
+}
 
 @Injectable()
 export class GuideService {
@@ -55,7 +61,10 @@ export class GuideService {
     };
     const sourceIds = new Set<string>();
     const resolvedSources = new Map<string, GuideSource>();
-    const prefetched = await this.rag.searchByQuery(dto.message, { limit: this.prefetchLimit });
+    const prefetched = await this.rag.searchByQuery(dto.message, {
+      limit: this.prefetchLimit,
+      sources: ['blog', 'biblioteka-tras', 'szlaki-dlugodystansowe'],
+    });
 
     let system = SYSTEM_PROMPT;
     if (dto.context?.trim()) {
@@ -85,7 +94,7 @@ export class GuideService {
         this.rememberSource(resolvedSources, {
           id: hit.id,
           title: hit.title,
-          source: hit.source,
+          source: RAG_SOURCE_LOCATIONS[hit.source],
           url: hit.url,
         });
       }
@@ -255,14 +264,14 @@ export class GuideService {
 
     // Priorytet: szczyty (żeby było 1:1 link do każdego opisywanego szczytu).
     for (const source of sources) {
-      if (source.source === 'szczyty' && source.url) {
+      if (isPeakSourceLabel(source.source) && source.url) {
         push(source.title, source.url);
       }
     }
     // Fallback: materiały (blog/trasy), jeśli nie ma szczytów z URL.
     if (lines.length === 0) {
       for (const source of sources) {
-        if (source.source !== 'szczyty' && source.url) {
+        if (!isPeakSourceLabel(source.source) && source.url) {
           push(source.title, source.url);
         }
       }
@@ -283,7 +292,7 @@ export class GuideService {
       sourceIds.add(key);
     }
     for (const source of toolResult.sources ?? []) {
-      const mapKey = source.source === 'szczyty' ? `peak:${source.id}` : source.id;
+      const mapKey = isPeakSourceLabel(source.source) ? `peak:${source.id}` : source.id;
       this.rememberSource(resolvedSources, source, mapKey);
     }
   }
@@ -293,7 +302,7 @@ export class GuideService {
     source: GuideSource,
     mapKey?: string,
   ): void {
-    const key = mapKey ?? (source.source === 'szczyty' ? `peak:${source.id}` : source.id);
+    const key = mapKey ?? (isPeakSourceLabel(source.source) ? `peak:${source.id}` : source.id);
     const previous = resolvedSources.get(key);
     if (!previous) {
       resolvedSources.set(key, source);
@@ -343,7 +352,7 @@ export class GuideService {
           known ?? {
             id: peakId,
             title: `Szczyt ${peakId}`,
-            source: 'szczyty',
+            source: RAG_SOURCE_LOCATIONS.szczyty,
           },
         );
         continue;
@@ -368,7 +377,7 @@ export class GuideService {
       out.push({
         id: hit.id,
         title: hit.title,
-        source: hit.source,
+        source: RAG_SOURCE_LOCATIONS[hit.source],
         url: hit.url,
       });
     }
