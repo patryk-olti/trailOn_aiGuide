@@ -7,12 +7,19 @@ import { RagIndexService } from '../rag/rag-index.service';
 import { RagSearchHit } from '../rag/rag.types';
 import { CreateGuideDto } from './dto/create-guide.dto';
 import { GUIDE_TOOLS, GuideToolsExecutor } from './guide.tools';
+import { planCatalogPrefetch } from './guide-catalog.prefetch';
 import { LOCATION_REQUIRED_USER_HINT, messageImpliesProximity } from './guide-location.messages';
 import { GuideReply, GuideSource, GuideToolRequestContext, GuideUsage } from './guide.types';
 
-const SYSTEM_PROMPT = `Jesteś przewodnikiem AI TrailOn. Pomagasz układać trasy i korzystasz z materiałów zespołu trailON (blog, biblioteka tras, szlaki długodystansowe) oraz katalogu szczytów.
+const SYSTEM_PROMPT = `Jesteś przewodnikiem AI TrailOn. Pomagasz układać trasy i korzystasz z materiałów zespołu trailON (blog, biblioteka tras, szlaki długodystansowe) oraz katalogu szczytów w Cloudflare D1.
 Odpowiadaj po polsku, konkretnie i praktycznie. Uwzględniaj bezpieczeństwo i realia terenu.
-Jeśli materiały nie zawierają odpowiedzi, powiedz to wprost. Nie wymyślaj faktów. Na końcu podaj krótką sekcję "Źródła" z tytułami i linkami, gdy są dostępne.`;
+
+Zasady źródeł (obowiązkowe):
+- O szczytach i pasmach odpowiadaj WYŁĄCZNIE na podstawie: sekcji "Najbardziej pasujące materiały", "Dane z katalogu (prefetch)" oraz wyników narzędzi search_peaks i search_materials.
+- Gdy w pytaniu pada pasmo lub szczyty, najpierw korzystaj z tych danych; nie twórz listy szczytów z ogólnej wiedzy modelu.
+- Każdy szczyt z katalogu, który polecasz, opisz według description z bazy; przy nim podaj link do wpisu na blogu (pole blog: / url), jeśli jest w danych.
+- Jeśli po narzędziach i prefetch brak wpisów — powiedz to wprost; nie uzupełniaj odpowiedzi z pamięci modelu.
+Na końcu podaj sekcję "Źródła" z tytułami i linkami HTTP do bloga, gdy są dostępne.`;
 
 @Injectable()
 export class GuideService {
@@ -44,6 +51,7 @@ export class GuideService {
       embeddingCalls: 1,
     };
     const sourceIds = new Set<string>();
+    const resolvedSources = new Map<string, GuideSource>();
     const prefetched = await this.rag.searchByQuery(dto.message, { limit: this.prefetchLimit });
 
     let system = SYSTEM_PROMPT;
@@ -71,17 +79,16 @@ export class GuideService {
       system += `\n\nNajbardziej pasujące materiały:\n${contextBlock}`;
       for (const hit of prefetched) {
         sourceIds.add(hit.id);
+        this.rememberSource(resolvedSources, {
+          id: hit.id,
+          title: hit.title,
+          source: hit.source,
+          url: hit.url,
+        });
       }
     }
 
-    const messages: ChatMessage[] = [
-      { role: 'system', content: system },
-      { role: 'user', content: dto.message },
-    ];
-
-    let latestModel = this.defaultModel;
-    let finalText = '';
-    let round = 0;
+    const catalogPlan = planCatalogPrefetch(dto.message);
     const toolContext: GuideToolRequestContext = {
       locationMissingForProximity: proximityWithoutLocation,
       ...(dto.location
@@ -94,6 +101,50 @@ export class GuideService {
           }
         : {}),
     };
+
+    if (catalogPlan) {
+      const catalogParts: string[] = [];
+      if (catalogPlan.peaks) {
+        const peakArgs: Record<string, unknown> = { limit: catalogPlan.peaks.limit };
+        if (catalogPlan.peaks.range) {
+          peakArgs.range = catalogPlan.peaks.range;
+        }
+        if (catalogPlan.peaks.query) {
+          peakArgs.query = catalogPlan.peaks.query;
+        }
+        if (catalogPlan.peaks.range || catalogPlan.peaks.query) {
+          const peakResult = await this.tools.execute(
+            'search_peaks',
+            JSON.stringify(peakArgs),
+            toolContext,
+          );
+          usage.embeddingCalls += peakResult.embeddingCalls ?? 0;
+          this.absorbToolResult(sourceIds, resolvedSources, peakResult);
+          catalogParts.push(`Katalog szczytów (D1):\n${peakResult.text}`);
+        }
+      }
+      const materialResult = await this.tools.execute(
+        'search_materials',
+        JSON.stringify({
+          query: catalogPlan.materials.query,
+          limit: catalogPlan.materials.limit,
+        }),
+        toolContext,
+      );
+      usage.embeddingCalls += 1;
+      this.absorbToolResult(sourceIds, resolvedSources, materialResult);
+      catalogParts.push(`Materiały trailON (blog / trasy):\n${materialResult.text}`);
+      system += `\n\nDane z katalogu (prefetch — użyj ich w pierwszej kolejności w odpowiedzi):\n${catalogParts.join('\n\n')}`;
+    }
+
+    const messages: ChatMessage[] = [
+      { role: 'system', content: system },
+      { role: 'user', content: dto.message },
+    ];
+
+    let latestModel = this.defaultModel;
+    let finalText = '';
+    let round = 0;
 
     while (round <= this.maxToolRounds) {
       const result = await this.openAi.complete(messages, {
@@ -114,9 +165,13 @@ export class GuideService {
         });
         for (const call of result.toolCalls) {
           const toolResult = await this.tools.execute(call.name, call.arguments, toolContext);
-          for (const key of toolResult.sourceKeys) {
-            sourceIds.add(key);
+          if (call.name === 'search_materials' || call.name === 'get_material') {
+            usage.embeddingCalls += 1;
           }
+          if (call.name === 'search_peaks') {
+            usage.embeddingCalls += toolResult.embeddingCalls ?? 0;
+          }
+          this.absorbToolResult(sourceIds, resolvedSources, toolResult);
           messages.push({
             role: 'tool',
             tool_call_id: call.id,
@@ -139,9 +194,39 @@ export class GuideService {
     return {
       reply: finalText,
       model: latestModel,
-      sources: this.buildSources([...sourceIds], prefetched),
+      sources: this.buildSources([...sourceIds], prefetched, resolvedSources),
       usage,
     };
+  }
+
+  private absorbToolResult(
+    sourceIds: Set<string>,
+    resolvedSources: Map<string, GuideSource>,
+    toolResult: { sourceKeys: string[]; sources?: GuideSource[]; embeddingCalls?: number },
+  ): void {
+    for (const key of toolResult.sourceKeys) {
+      sourceIds.add(key);
+    }
+    for (const source of toolResult.sources ?? []) {
+      const mapKey = source.source === 'szczyty' ? `peak:${source.id}` : source.id;
+      this.rememberSource(resolvedSources, source, mapKey);
+    }
+  }
+
+  private rememberSource(
+    resolvedSources: Map<string, GuideSource>,
+    source: GuideSource,
+    mapKey?: string,
+  ): void {
+    const key = mapKey ?? (source.source === 'szczyty' ? `peak:${source.id}` : source.id);
+    const previous = resolvedSources.get(key);
+    if (!previous) {
+      resolvedSources.set(key, source);
+      return;
+    }
+    if (!previous.url && source.url) {
+      resolvedSources.set(key, { ...previous, url: source.url });
+    }
   }
 
   private formatPrefetch(hits: RagSearchHit[]): string {
@@ -163,7 +248,11 @@ export class GuideService {
       .join('\n\n');
   }
 
-  private buildSources(ids: string[], prefetched: RagSearchHit[]): GuideSource[] {
+  private buildSources(
+    ids: string[],
+    prefetched: RagSearchHit[],
+    resolvedSources: Map<string, GuideSource>,
+  ): GuideSource[] {
     const out: GuideSource[] = [];
     const seen = new Set<string>();
     for (const id of ids) {
@@ -174,11 +263,23 @@ export class GuideService {
           continue;
         }
         seen.add(key);
-        out.push({
-          id: peakId,
-          title: `Szczyt ${peakId}`,
-          source: 'szczyty',
-        });
+        const known = resolvedSources.get(key);
+        out.push(
+          known ?? {
+            id: peakId,
+            title: `Szczyt ${peakId}`,
+            source: 'szczyty',
+          },
+        );
+        continue;
+      }
+      const knownMaterial = resolvedSources.get(id);
+      if (knownMaterial) {
+        if (seen.has(knownMaterial.id)) {
+          continue;
+        }
+        seen.add(knownMaterial.id);
+        out.push(knownMaterial);
         continue;
       }
       const hit = prefetched.find((row) => row.id === id) ?? this.rag.getMaterial(id);

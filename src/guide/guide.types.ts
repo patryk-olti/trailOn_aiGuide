@@ -15,6 +15,13 @@ export interface GuideSource {
   url?: string;
 }
 
+export interface GuideToolResult {
+  text: string;
+  sourceKeys: string[];
+  sources?: GuideSource[];
+  embeddingCalls?: number;
+}
+
 export interface GuideUsage {
   promptTokens: number;
   completionTokens: number;

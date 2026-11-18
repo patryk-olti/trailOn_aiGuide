@@ -5,7 +5,7 @@ import { RagIndexService } from '../rag/rag-index.service';
 import { RAG_MAX_TOOL_TEXT_CHARS } from '../rag/rag.constants';
 import { RagContentSource } from '../rag/rag.constants';
 import { LOCATION_REQUIRED_TOOL_RESULT } from './guide-location.messages';
-import { GuideToolRequestContext } from './guide.types';
+import { GuideSource, GuideToolRequestContext, GuideToolResult } from './guide.types';
 
 const DEFAULT_NEARBY_RADIUS_KM = 100;
 const EARTH_RADIUS_KM = 6371;
@@ -15,7 +15,8 @@ export const GUIDE_TOOLS: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'search_materials',
-      description: 'Szuka fragmentów w materiałach trailON (blog, biblioteka tras, szlaki długodystansowe).',
+      description:
+        'Szuka fragmentów w materiałach trailON (blog R2, biblioteka tras, szlaki długodystansowe). Obowiązkowe przy pytaniach o szczyty lub pasma przed udzieleniem odpowiedzi.',
       parameters: {
         type: 'object',
         properties: {
@@ -52,7 +53,7 @@ export const GUIDE_TOOLS: ChatCompletionTool[] = [
     function: {
       name: 'search_peaks',
       description:
-        'Wyszukuje opublikowane szczyty w katalogu trailON (nazwa, pasmo, wysokość, odległość od pozycji użytkownika).',
+        'Wyszukuje opublikowane szczyty w katalogu trailON (Cloudflare D1 / trailon_peaks_blob): nazwa, pasmo, wysokość, opis, link do blogu. Używaj range np. „Karkonosze” przy pytaniach o pasmo.',
       parameters: {
         type: 'object',
         properties: {
@@ -86,7 +87,7 @@ export class GuideToolsExecutor {
     name: string,
     rawArguments: string,
     request?: GuideToolRequestContext,
-  ): Promise<{ text: string; sourceKeys: string[] }> {
+  ): Promise<GuideToolResult> {
     let args: ToolArgs = {};
     try {
       args = JSON.parse(rawArguments) as ToolArgs;
@@ -106,7 +107,7 @@ export class GuideToolsExecutor {
     return { text: `Nieznane narzędzie: ${name}`, sourceKeys: [] };
   }
 
-  private async searchMaterials(args: ToolArgs): Promise<{ text: string; sourceKeys: string[] }> {
+  private async searchMaterials(args: ToolArgs): Promise<GuideToolResult> {
     const query = readString(args.query);
     if (!query) {
       return { text: 'Brak zapytania do wyszukiwania materiałów.', sourceKeys: [] };
@@ -126,10 +127,16 @@ export class GuideToolsExecutor {
     return {
       text: truncate(lines.join('\n\n'), RAG_MAX_TOOL_TEXT_CHARS),
       sourceKeys: hits.map((hit) => hit.id),
+      sources: hits.map((hit) => ({
+        id: hit.id,
+        title: hit.title,
+        source: hit.source,
+        url: hit.url,
+      })),
     };
   }
 
-  private getMaterial(args: ToolArgs): { text: string; sourceKeys: string[] } {
+  private getMaterial(args: ToolArgs): GuideToolResult {
     const id = readString(args.id);
     if (!id) {
       return { text: 'Brak identyfikatora materiału.', sourceKeys: [] };
@@ -149,13 +156,21 @@ export class GuideToolsExecutor {
     return {
       text: truncate(`${header}\n${material.content}`, RAG_MAX_TOOL_TEXT_CHARS),
       sourceKeys: [material.id],
+      sources: [
+        {
+          id: material.id,
+          title: material.title,
+          source: material.source,
+          url: material.url,
+        },
+      ],
     };
   }
 
   private async searchPeaks(
     args: ToolArgs,
     request?: GuideToolRequestContext,
-  ): Promise<{ text: string; sourceKeys: string[] }> {
+  ): Promise<GuideToolResult> {
     const table = this.d1.assertTableName(this.d1.peaksTable);
     const limit = clampInt(args.limit, 5, 1, 8);
     const where: string[] = [`status = 'published'`];
@@ -223,6 +238,8 @@ export class GuideToolsExecutor {
       };
     }
 
+    const blogLinkMinScore = 0.22;
+
     if (hasGeo && !isValidLatLng(nearLat, nearLng)) {
       return { text: 'Nieprawidłowe współrzędne do wyszukiwania w pobliżu.', sourceKeys: [] };
     }
@@ -236,9 +253,9 @@ export class GuideToolsExecutor {
         cos(radians(?)) * cos(radians(lat)) * cos(radians(lng) - radians(?)) + sin(radians(?)) * sin(radians(lat))
       ))))`;
       const innerParams = [nearLat, nearLng, nearLat, ...params];
-      const sql = `SELECT peak_id, name, elevation_m, range_name, description, recommended, distance_km
+      const sql = `SELECT peak_id, name, elevation_m, range_name, description, recommended, tags_json, distance_km
         FROM (
-          SELECT peak_id, name, elevation_m, range_name, description, recommended,
+          SELECT peak_id, name, elevation_m, range_name, description, recommended, tags_json,
             ${haversineKm} AS distance_km
           FROM ${table}
           WHERE ${where.join(' AND ')} AND lat IS NOT NULL AND lng IS NOT NULL
@@ -248,7 +265,7 @@ export class GuideToolsExecutor {
         LIMIT ?`;
       rows = await this.d1.query<PeakResult>(sql, [...innerParams, radiusKm, limit]);
     } else {
-      const sql = `SELECT peak_id, name, elevation_m, range_name, description, recommended
+      const sql = `SELECT peak_id, name, elevation_m, range_name, description, recommended, tags_json
         FROM ${table}
         WHERE ${where.join(' AND ')}
         ORDER BY recommended DESC, elevation_m DESC
@@ -261,18 +278,50 @@ export class GuideToolsExecutor {
       return { text: 'Brak szczytów spełniających kryteria.', sourceKeys: [] };
     }
 
-    const lines = rows.map((row) => {
+    const sources: GuideSource[] = [];
+    const lines: string[] = [];
+    let embeddingCalls = 0;
+    for (const row of rows) {
+      let blogUrl = blogUrlFromTags(row.tags_json);
+      if (!blogUrl) {
+        blogUrl = await this.findBlogUrlForPeak(row.name, row.range_name, blogLinkMinScore);
+        embeddingCalls += 1;
+      }
+      sources.push({
+        id: row.peak_id,
+        title: row.name,
+        source: 'szczyty',
+        url: blogUrl,
+      });
       const description = row.description ? truncate(row.description, 240) : 'Brak opisu.';
       const distance =
         typeof row.distance_km === 'number'
           ? ` | ~${row.distance_km.toFixed(1)} km`
           : '';
-      return `${row.name} (${row.elevation_m} m, ${row.range_name}${distance}) | id=${row.peak_id}\n${description}`;
-    });
+      const blogPart = blogUrl ? ` | blog: ${blogUrl}` : '';
+      lines.push(
+        `${row.name} (${row.elevation_m} m, ${row.range_name}${distance}) | id=${row.peak_id}${blogPart}\n${description}`,
+      );
+    }
     return {
       text: truncate(lines.join('\n\n'), RAG_MAX_TOOL_TEXT_CHARS),
       sourceKeys: rows.map((row) => `peak:${row.peak_id}`),
+      sources,
+      embeddingCalls,
     };
+  }
+
+  private async findBlogUrlForPeak(
+    name: string,
+    rangeName: string,
+    minScore: number,
+  ): Promise<string | undefined> {
+    const hits = await this.rag.searchByQuery(`${name} ${rangeName}`, {
+      source: 'blog',
+      limit: 3,
+      minScore,
+    });
+    return hits.find((hit) => hit.url)?.url;
   }
 }
 
@@ -331,4 +380,22 @@ function truncate(value: string, max: number): string {
     return value;
   }
   return `${value.slice(0, max - 1)}…`;
+}
+
+function blogUrlFromTags(tagsJson: string | null | undefined): string | undefined {
+  if (!tagsJson?.trim()) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(tagsJson) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return undefined;
+    }
+    const record = parsed as Record<string, unknown>;
+    return (
+      readString(record.url) ?? readString(record.blog_url) ?? readString(record.blogUrl)
+    );
+  } catch {
+    return undefined;
+  }
 }
