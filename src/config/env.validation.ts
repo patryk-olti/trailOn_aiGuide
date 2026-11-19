@@ -20,6 +20,9 @@ export interface AppEnv {
   RAG_PREFETCH_LIMIT: number;
   RAG_TOOL_ROUND_LIMIT: number;
   RAG_MAX_COMPLETION_TOKENS: number;
+  CF_D1_CONVERSATIONS_TABLE: string;
+  CF_D1_MESSAGES_TABLE: string;
+  GUIDE_HISTORY_TURN_LIMIT: number;
 }
 
 export function validateEnv(config: Record<string, unknown>): AppEnv {
@@ -48,6 +51,12 @@ export function validateEnv(config: Record<string, unknown>): AppEnv {
   );
   const peaksTable = readOptionalString(config, 'CF_D1_PEAKS_TABLE', 'trailon_peaks_blob');
   const ragIndexKey = readOptionalString(config, 'RAG_INDEX_KEY', 'rag-index/index.json');
+  const conversationsTable = readOptionalString(
+    config,
+    'CF_D1_CONVERSATIONS_TABLE',
+    'guide_conversations',
+  );
+  const messagesTable = readOptionalString(config, 'CF_D1_MESSAGES_TABLE', 'guide_messages');
 
   return {
     PORT: port,
@@ -77,6 +86,9 @@ export function validateEnv(config: Record<string, unknown>): AppEnv {
       128,
       4096,
     ),
+    CF_D1_CONVERSATIONS_TABLE: conversationsTable,
+    CF_D1_MESSAGES_TABLE: messagesTable,
+    GUIDE_HISTORY_TURN_LIMIT: readPositiveInt(config, 'GUIDE_HISTORY_TURN_LIMIT', 20, 1, 50),
   };
 }
 

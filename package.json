@@ -9,7 +9,10 @@
     "start": "nest start",
     "start:dev": "nest start --watch",
     "start:prod": "node dist/main",
-    "rag:index": "nest build && node dist/rag/rag-index.cli.js"
+    "rag:index": "nest build && node dist/rag/rag-index.cli.js",
+    "d1:migrate": "node scripts/apply-d1-migration.mjs",
+    "test:conversation": "nest build && node --test src/conversation/conversation-history.helpers.test.mjs",
+    "test:conversation:d1": "node scripts/conversation-d1-smoke.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1169.0",

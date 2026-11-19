@@ -29,6 +29,7 @@ export interface GuideUsage {
 }
 
 export interface GuideReply {
+  conversationId: string;
   response: string;
   model: string;
   sources: GuideSource[];

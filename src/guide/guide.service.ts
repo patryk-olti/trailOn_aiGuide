@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ConversationHistoryService } from '../conversation/conversation-history.service';
 import { D1Service } from '../cloudflare/d1.service';
 import { OpenAiService } from '../openai/openai.service';
 import { ChatMessage, TokenUsage } from '../openai/openai.types';
@@ -50,6 +51,7 @@ export class GuideService {
   constructor(
     private readonly openAi: OpenAiService,
     private readonly rag: RagIndexService,
+    private readonly conversationHistory: ConversationHistoryService,
     d1: D1Service,
     openMeteo: OpenMeteoService,
     config: ConfigService,
@@ -62,6 +64,12 @@ export class GuideService {
   }
 
   async reply(dto: CreateGuideDto): Promise<GuideReply> {
+    const conversationId = await this.conversationHistory.resolveConversation(
+      dto.participantId,
+      dto.conversationId,
+    );
+    const priorTurns = await this.conversationHistory.getRecentTurns(conversationId);
+
     const usage: GuideUsage = {
       promptTokens: 0,
       completionTokens: 0,
@@ -146,8 +154,13 @@ export class GuideService {
       system += `\n\nDane z katalogu (prefetch — użyj ich w pierwszej kolejności w odpowiedzi):\n${catalogParts.join('\n\n')}`;
     }
 
+    const historyMessages: ChatMessage[] = priorTurns.map((turn) => ({
+      role: turn.role,
+      content: turn.content,
+    }));
     const messages: ChatMessage[] = [
       { role: 'system', content: system },
+      ...historyMessages,
       { role: 'user', content: dto.message },
     ];
 
@@ -201,7 +214,11 @@ export class GuideService {
     }
 
     const sources = this.buildSources([...sourceIds], prefetched, resolvedSources);
+
+    await this.conversationHistory.appendExchange(conversationId, dto.message, finalText);
+
     return {
+      conversationId,
       response: this.formatHtmlResponse(finalText, sources),
       model: latestModel,
       sources,
