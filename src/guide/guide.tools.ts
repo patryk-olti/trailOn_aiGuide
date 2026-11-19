@@ -7,6 +7,7 @@ import { RagContentSource, RAG_SOURCE_LOCATIONS } from '../rag/rag.constants';
 import { OpenMeteoService } from '../weather/open-meteo.service';
 import { runGetPeakWeather } from './guide-weather.tool';
 import { LOCATION_REQUIRED_TOOL_RESULT } from './guide-location.messages';
+import { LibraryRoutesService } from './library-routes.service';
 import { GuideSource, GuideToolRequestContext, GuideToolResult } from './guide.types';
 
 const DEFAULT_NEARBY_RADIUS_KM = 100;
@@ -98,6 +99,26 @@ export const GUIDE_TOOLS: ChatCompletionTool[] = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'search_library_routes',
+      description:
+        'Szuka gotowych planów w bibliotece tras trailON (R2 / biblioteka-tras). Obowiązkowe, gdy użytkownik pyta o trasę, szlak, dojście lub wycieczkę na szczyt albo w pasmo. Zwraca propozycje z nazwą, trudnością, długością i dokładnym url. Nie wymyślaj tras spoza tego wyniku.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description: 'Nazwa szczytu, pasma albo fragment nazwy trasy, np. „Biskupia Kopa”.',
+          },
+          limit: { type: 'integer', minimum: 1, maximum: 5 },
+        },
+        required: ['query'],
+        additionalProperties: false,
+      },
+    },
+  },
 ];
 
 type ToolArgs = Record<string, unknown>;
@@ -107,6 +128,7 @@ export class GuideToolsExecutor {
     private readonly rag: RagIndexService,
     private readonly d1: D1Service,
     private readonly weather: OpenMeteoService,
+    private readonly libraryRoutes: LibraryRoutesService,
   ) {}
 
   async execute(
@@ -133,7 +155,37 @@ export class GuideToolsExecutor {
     if (name === 'get_peak_weather') {
       return runGetPeakWeather(args, this.d1, this.weather);
     }
+    if (name === 'search_library_routes') {
+      return this.searchLibraryRoutes(args);
+    }
     return { text: `Nieznane narzędzie: ${name}`, sourceKeys: [] };
+  }
+
+  private async searchLibraryRoutes(args: ToolArgs): Promise<GuideToolResult> {
+    const query = readString(args.query);
+    if (!query) {
+      return { text: 'Podaj nazwę szczytu, pasma albo fragment nazwy trasy.', sourceKeys: [] };
+    }
+    const limit = clampInt(args.limit, 3, 1, 5);
+    try {
+      const found = await this.libraryRoutes.search(query, limit);
+      return {
+        text: found.text,
+        sourceKeys: found.routes.map((route) => route.id),
+        sources: found.routes.map((route) => ({
+          id: route.id,
+          title: route.name,
+          source: RAG_SOURCE_LOCATIONS['biblioteka-tras'],
+          url: route.url,
+        })),
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'nieznany błąd';
+      return {
+        text: `Nie udało się odczytać biblioteki tras (${message}).`,
+        sourceKeys: [],
+      };
+    }
   }
 
   private async searchMaterials(args: ToolArgs): Promise<GuideToolResult> {

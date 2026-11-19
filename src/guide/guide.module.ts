@@ -6,10 +6,11 @@ import { RagModule } from '../rag/rag.module';
 import { WeatherModule } from '../weather/weather.module';
 import { GuideController } from './guide.controller';
 import { GuideService } from './guide.service';
+import { LibraryRoutesService } from './library-routes.service';
 
 @Module({
   imports: [OpenAiModule, CloudflareModule, ConversationModule, RagModule, WeatherModule],
   controllers: [GuideController],
-  providers: [GuideService],
+  providers: [GuideService, LibraryRoutesService],
 })
 export class GuideModule {}

@@ -11,6 +11,8 @@ import { RAG_SOURCE_LOCATIONS } from '../rag/rag.constants';
 import { CreateGuideDto } from './dto/create-guide.dto';
 import { GUIDE_TOOLS, GuideToolsExecutor } from './guide.tools';
 import { planCatalogPrefetch } from './guide-catalog.prefetch';
+import { messageAsksForRoute, routeQueryTokens } from './library-routes';
+import { LibraryRoutesService } from './library-routes.service';
 import {
   blogUrlKey,
   buildUrlTitleMap,
@@ -27,6 +29,8 @@ Odpowiadaj po polsku, konkretnie i praktycznie. Uwzględniaj bezpieczeństwo i r
 
 Zasady źródeł (obowiązkowe):
 - O szczytach i pasmach odpowiadaj WYŁĄCZNIE na podstawie: sekcji "Najbardziej pasujące materiały", "Dane z katalogu (prefetch)" oraz wyników narzędzi search_peaks i search_materials.
+- O trasach, szlakach i dojściu odpowiadaj WYŁĄCZNIE na podstawie search_library_routes albo sekcji "Biblioteka tras (prefetch)". Wywołaj search_library_routes z nazwą szczytu lub pasma (np. „Biskupia Kopa”).
+- Każdą propozycję z biblioteki podaj z nazwą, pasmem, długością, trudnością i adresem url skopiowanym dosłownie. Nie wymyślaj innych tras ani linków. Gdy wynik jest pusty, napisz że w bibliotece nie ma pasującej trasy.
 - Gdy w pytaniu pada pasmo lub szczyty, najpierw korzystaj z tych danych; nie twórz listy szczytów z ogólnej wiedzy modelu.
 - W odpowiedzi domyślnie wymieniaj MAKSYMALNIE 3 szczyty. Jeśli użytkownik wyraźnie prosi o większą liczbę (np. „wymień 5 szczytów”), możesz podać więcej i dopasować limit w search_peaks.
 - Jeśli do szczytu jest wpis blogowy (R2, np. blog/szrenica.json), opisuj szczyt głównie z jego zajawki i kontentu; katalog D1 traktuj jako uzupełnienie (wysokość, pasmo).
@@ -63,13 +67,14 @@ export class GuideService {
     private readonly conversationHistory: ConversationHistoryService,
     d1: D1Service,
     openMeteo: OpenMeteoService,
+    private readonly libraryRoutes: LibraryRoutesService,
     config: ConfigService,
   ) {
     this.maxToolRounds = config.getOrThrow<number>('RAG_TOOL_ROUND_LIMIT');
     this.maxCompletionTokens = config.getOrThrow<number>('RAG_MAX_COMPLETION_TOKENS');
     this.prefetchLimit = config.getOrThrow<number>('RAG_PREFETCH_LIMIT');
     this.defaultModel = config.getOrThrow<string>('OPENAI_MODEL');
-    this.tools = new GuideToolsExecutor(rag, d1, openMeteo);
+    this.tools = new GuideToolsExecutor(rag, d1, openMeteo, libraryRoutes);
   }
 
   async reply(dto: CreateGuideDto): Promise<GuideReply> {
@@ -161,6 +166,16 @@ export class GuideService {
       this.absorbToolResult(sourceIds, resolvedSources, materialResult);
       catalogParts.push(`Materiały trailON (blog / trasy):\n${materialResult.text}`);
       system += `\n\nDane z katalogu (prefetch — użyj ich w pierwszej kolejności w odpowiedzi):\n${catalogParts.join('\n\n')}`;
+    }
+
+    if (messageAsksForRoute(dto.message) && routeQueryTokens(dto.message).length > 0) {
+      const routeResult = await this.tools.execute(
+        'search_library_routes',
+        JSON.stringify({ query: dto.message, limit: 3 }),
+        toolContext,
+      );
+      this.absorbToolResult(sourceIds, resolvedSources, routeResult);
+      system += `\n\nBiblioteka tras (prefetch — te propozycje podaj użytkownikowi):\n${routeResult.text}`;
     }
 
     const alreadyCitedBlogs = collectCitedBlogUrls(priorTurns.map((turn) => turn.content));

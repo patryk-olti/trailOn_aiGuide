@@ -141,4 +141,40 @@ export class ConversationHistoryService {
       [now, conversationId],
     );
   }
+
+  /**
+   * Kasuje rozmowę i jej wiadomości, tylko gdy należy do podanego uczestnika.
+   */
+  async deleteConversation(
+    participantId: string,
+    conversationId: string,
+  ): Promise<{ deleted: true }> {
+    const trimmedParticipant = participantId.trim();
+    const id = conversationId.trim();
+    if (!trimmedParticipant || trimmedParticipant.length > 256) {
+      throw new BadRequestException('participantId musi mieć od 1 do 256 znaków.');
+    }
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+      throw new BadRequestException('Nieprawidłowy identyfikator rozmowy.');
+    }
+
+    const rows = await this.d1.query<ConversationRow>(
+      `SELECT conversation_id, participant_id FROM ${this.conversationsTable} WHERE conversation_id = ? LIMIT 1`,
+      [id],
+    );
+    const row = rows[0];
+    if (!row) {
+      throw new NotFoundException('Nie znaleziono rozmowy.');
+    }
+    if (row.participant_id !== trimmedParticipant) {
+      throw new ForbiddenException('Rozmowa nie należy do tego uczestnika.');
+    }
+
+    await this.d1.query(`DELETE FROM ${this.messagesTable} WHERE conversation_id = ?`, [id]);
+    await this.d1.query(
+      `DELETE FROM ${this.conversationsTable} WHERE conversation_id = ? AND participant_id = ?`,
+      [id, trimmedParticipant],
+    );
+    return { deleted: true };
+  }
 }
