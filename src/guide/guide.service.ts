@@ -11,7 +11,15 @@ import { RAG_SOURCE_LOCATIONS } from '../rag/rag.constants';
 import { CreateGuideDto } from './dto/create-guide.dto';
 import { GUIDE_TOOLS, GuideToolsExecutor } from './guide.tools';
 import { planCatalogPrefetch } from './guide-catalog.prefetch';
-import { buildUrlTitleMap, plainTextToGuideHtml, trailonGuideAnchor } from './guide-response-html';
+import {
+  blogUrlKey,
+  buildUrlTitleMap,
+  collectCitedBlogUrls,
+  isTrailonBlogUrl,
+  plainTextToGuideHtml,
+  suppressRepeatedBlogLinks,
+  trailonGuideAnchor,
+} from './guide-response-html';
 import { GuideReply, GuideSource, GuideToolRequestContext, GuideUsage } from './guide.types';
 
 const SYSTEM_PROMPT = `Jesteś przewodnikiem AI TrailOn. Pomagasz układać trasy i korzystasz z materiałów zespołu trailON (blog, biblioteka tras, szlaki długodystansowe) oraz katalogu szczytów w Cloudflare D1.
@@ -25,6 +33,7 @@ Zasady źródeł (obowiązkowe):
 - Jeśli opisujesz jakiś szczyt, MUSI istnieć jego URL blogowy w danych (pole url w materiale lub url bloga z katalogu). Jeśli nie ma URL — nie opisuj tego szczytu i napisz wprost, że brak wpisu blogowego.
 - Link do bloga kopiuj wyłącznie z pola url w materiale (np. https://trailon.pl/przewodnik/karkonosze/szrenica). Nie wymyślaj ani nie składaj innych adresów.
 - W treści możesz wstawić adres bloga skopiowany z pola url w danych (np. przy opisie szczytu); serwis zamieni go na link z tytułem wpisu.
+- Dany adres bloga wstaw w rozmowie tylko raz. Jeśli ten sam URL (ten sam szczyt / ten sam wpis) był już w wcześniejszej odpowiedzi, nie wklejaj go ponownie — odpowiedz bez linku. Inny szczyt, z innym adresem, linkuj normalnie przy pierwszej wzmiance.
 - Jeśli po narzędziach i prefetch brak wpisów — powiedz to wprost; nie uzupełniaj odpowiedzi z pamięci modelu.
 Pogoda:
 - Na pytania o pogodę, wiatr, temperaturę na szczycie lub „na weekend” wywołaj get_peak_weather (najpierw search_peaks jeśli nie masz peak_id).
@@ -154,6 +163,15 @@ export class GuideService {
       system += `\n\nDane z katalogu (prefetch — użyj ich w pierwszej kolejności w odpowiedzi):\n${catalogParts.join('\n\n')}`;
     }
 
+    const alreadyCitedBlogs = collectCitedBlogUrls(priorTurns.map((turn) => turn.content));
+    if (alreadyCitedBlogs.size > 0) {
+      const listed = [...alreadyCitedBlogs].map((url) => `- ${url}`).join('\n');
+      system +=
+        '\n\nAdresy blogów już podane w tej rozmowie. Nie wstawiaj ich ponownie (ani jako goły URL, ani jako link markdown), nawet jeśli prefetch każe skopiować url bloga. ' +
+        'Ten sam szczyt opisz bez linku. Inny szczyt (inny adres spoza listy) linkuj przy pierwszym razie:\n' +
+        listed;
+    }
+
     const historyMessages: ChatMessage[] = priorTurns.map((turn) => ({
       role: turn.role,
       content: turn.content,
@@ -213,7 +231,11 @@ export class GuideService {
         'Nie udało się przygotować odpowiedzi. Spróbuj przeformułować pytanie lub zawęzić temat.';
     }
 
-    const sources = this.buildSources([...sourceIds], prefetched, resolvedSources);
+    finalText = suppressRepeatedBlogLinks(finalText, alreadyCitedBlogs);
+    const sources = this.omitRepeatedBlogSources(
+      this.buildSources([...sourceIds], prefetched, resolvedSources),
+      alreadyCitedBlogs,
+    );
 
     await this.conversationHistory.appendExchange(conversationId, dto.message, finalText);
 
@@ -224,6 +246,22 @@ export class GuideService {
       sources,
       usage,
     };
+  }
+
+  private omitRepeatedBlogSources(
+    sources: GuideSource[],
+    alreadyCitedBlogs: ReadonlySet<string>,
+  ): GuideSource[] {
+    if (alreadyCitedBlogs.size === 0) {
+      return sources;
+    }
+    return sources.filter((source) => {
+      const url = (source.url ?? '').trim();
+      if (!url || !isTrailonBlogUrl(url)) {
+        return true;
+      }
+      return !alreadyCitedBlogs.has(blogUrlKey(url));
+    });
   }
 
   private formatHtmlResponse(text: string, sources: GuideSource[]): string {

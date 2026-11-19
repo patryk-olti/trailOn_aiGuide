@@ -12,6 +12,7 @@
     "rag:index": "nest build && node dist/rag/rag-index.cli.js",
     "d1:migrate": "node scripts/apply-d1-migration.mjs",
     "test:conversation": "nest build && node --test src/conversation/conversation-history.helpers.test.mjs",
+    "test:guide-links": "nest build && node --test src/guide/guide-blog-links.test.mjs",
     "test:conversation:d1": "node scripts/conversation-d1-smoke.mjs"
   },
   "dependencies": {
