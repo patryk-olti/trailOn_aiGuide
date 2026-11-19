@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   collectCitedBlogUrls,
+  plainTextToGuideHtml,
   suppressRepeatedBlogLinks,
 } from '../../dist/guide/guide-response-html.js';
 
@@ -43,6 +44,27 @@ test('adres z ukośnikiem i query liczy się jako ten sam wpis', () => {
   const cited = collectCitedBlogUrls([`${SNIEZKA}/?utm=1`]);
   const next = suppressRepeatedBlogLinks(`Powtórka ${SNIEZKA}.`, cited);
   assert.equal(next.includes('trailon.pl/przewodnik'), false);
+});
+
+test('między ostatnim podpunktem a kolejnym numerem jest większy odstęp', () => {
+  const html = plainTextToGuideHtml(
+    [
+      '1. Trzy Korony (Pieniny)',
+      'Czas przejścia: około 3-4 godziny w jedną stronę.',
+      'Link do bloga: Trzy Korony - najbardziej charakterystyczny szczyt polski?',
+      '2. Kłodzka Góra (Góry Bardzkie)',
+      'Czas przejścia: około 2-3 godziny w jedną stronę.',
+      'Link do bloga: Kłodzka Góra i spacer nad kotliną.',
+      '3. Bukowina Waksmundzka (Gorce)',
+      'Atrakcje: panorama Tatr.',
+    ].join('\n'),
+    new Map(),
+  );
+  assert.match(html, /<p style="margin-top:1\.6em">2\. Kłodzka Góra/);
+  assert.match(html, /<p style="margin-top:1\.6em">3\. Bukowina Waksmundzka/);
+  assert.equal(html.startsWith('<p>1. Trzy Korony'), true);
+  assert.equal(html.includes('polski?<br/>2. Kłodzka'), false);
+  assert.equal(html.includes('stronę.<br/>Link do bloga: Trzy Korony'), true);
 });
 
 test('link do trasy nie jest traktowany jak blog', () => {

@@ -235,6 +235,38 @@ export function formatInlineParagraphToHtml(
     .join('');
 }
 
+/** Odstęp przed kolejnym punktem „1. / 2. / 3.” — większy niż między podpunktami. */
+const NUMBERED_ITEM_GAP = '1.6em';
+const NUMBERED_ITEM_LINE = /^(?:\*\*)?\d{1,2}\.\s+\S/;
+
+function isNumberedItemStart(line: string): boolean {
+  return NUMBERED_ITEM_LINE.test(line.trim());
+}
+
+function splitGuideBlocks(text: string): string[][] {
+  const blocks: string[][] = [];
+  let current: string[] = [];
+  const flush = (): void => {
+    if (current.length > 0) {
+      blocks.push(current);
+      current = [];
+    }
+  };
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) {
+      flush();
+      continue;
+    }
+    if (current.length > 0 && isNumberedItemStart(line)) {
+      flush();
+    }
+    current.push(line);
+  }
+  flush();
+  return blocks;
+}
+
 export function plainTextToGuideHtml(
   text: string,
   urlTitles: Map<string, string>,
@@ -244,14 +276,14 @@ export function plainTextToGuideHtml(
   if (!trimmed) {
     return '<p></p>';
   }
-  const paragraphs = trimmed.split(/\r?\n\s*\r?\n/g);
-  return paragraphs
-    .map((paragraph) => {
-      const lines = paragraph.split(/\r?\n/);
+  return splitGuideBlocks(trimmed)
+    .map((lines, index) => {
       const inner = lines
         .map((line) => formatInlineParagraphToHtml(line, urlTitles, resolveTitle))
         .join('<br/>');
-      return `<p>${inner}</p>`;
+      const gapBefore = index > 0 && isNumberedItemStart(lines[0] ?? '');
+      const style = gapBefore ? ` style="margin-top:${NUMBERED_ITEM_GAP}"` : '';
+      return `<p${style}>${inner}</p>`;
     })
     .join('');
 }
