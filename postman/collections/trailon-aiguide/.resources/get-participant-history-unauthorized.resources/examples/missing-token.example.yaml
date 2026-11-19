@@ -1,0 +1,19 @@
+$kind: http-example
+name: brak tokenu
+order: 1000
+request:
+  url: '{{base_url}}/guide/history/48291'
+  method: GET
+response:
+  statusCode: 401
+  statusText: Unauthorized
+  headers:
+    - key: Content-Type
+      value: application/json
+  body:
+    type: json
+    content: |-
+      {
+        "message": "Unauthorized",
+        "statusCode": 401
+      }

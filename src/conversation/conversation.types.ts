@@ -19,3 +19,22 @@ export interface StoredChatTurn {
   role: StoredMessageRole;
   content: string;
 }
+
+export interface HistoryMessage {
+  messageId: string;
+  role: StoredMessageRole;
+  content: string;
+  createdAt: string;
+}
+
+export interface HistoryConversation {
+  conversationId: string;
+  createdAt: string;
+  updatedAt: string;
+  messages: HistoryMessage[];
+}
+
+export interface ParticipantHistory {
+  participantId: string;
+  conversations: HistoryConversation[];
+}

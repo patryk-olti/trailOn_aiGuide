@@ -1,0 +1,18 @@
+$kind: collection
+name: trailon-aiguide
+description: >-
+  Odczyt historii rozmów przewodnika. Zwraca najwyżej 5 ostatnich konwersacji
+  uczestnika i w każdej najwyżej 5 ostatnich wiadomości.
+auth:
+  type: bearer
+  credentials:
+    - key: token
+      value: '{{AUTH_BEARER_TOKEN}}'
+variables:
+  - key: base_url
+    value: 'http://127.0.0.1:3000'
+  - key: participantId
+    value: '48291'
+  - key: AUTH_BEARER_TOKEN
+    value: ''
+    description: Bearer serwisu. Ustaw lokalnie, nie commituj prawdziwego tokenu.

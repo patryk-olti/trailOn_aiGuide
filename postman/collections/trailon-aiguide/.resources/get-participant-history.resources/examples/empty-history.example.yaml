@@ -1,0 +1,19 @@
+$kind: http-example
+name: pusta historia
+order: 2000
+request:
+  url: '{{base_url}}/guide/history/48291'
+  method: GET
+response:
+  statusCode: 200
+  statusText: OK
+  headers:
+    - key: Content-Type
+      value: application/json
+  body:
+    type: json
+    content: |-
+      {
+        "participantId": "48291",
+        "conversations": []
+      }

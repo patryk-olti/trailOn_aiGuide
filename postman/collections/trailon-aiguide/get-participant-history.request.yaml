@@ -1,0 +1,27 @@
+$kind: http-request
+name: 'GET guide history by participant'
+method: GET
+url: '{{base_url}}/guide/history/{{participantId}}'
+order: 1000
+pathVariables:
+  - key: participantId
+    value: '{{participantId}}'
+    description: Identyfikator użytkownika TrailOn (1–256 znaków).
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test('status 200', () => pm.response.to.have.status(200));
+      const body = pm.response.json();
+      pm.test('participantId z odpowiedzi', () => {
+        pm.expect(body.participantId).to.eql(pm.variables.get('participantId'));
+      });
+      pm.test('najwyzej 5 konwersacji', () => {
+        pm.expect(body.conversations).to.be.an('array').with.length.at.most(5);
+      });
+      pm.test('najwyzej 5 wiadomosci w konwersacji', () => {
+        for (const conversation of body.conversations) {
+          pm.expect(conversation.messages).to.be.an('array').with.length.at.most(5);
+        }
+      });
+examples: './.resources/get-participant-history.resources/examples'

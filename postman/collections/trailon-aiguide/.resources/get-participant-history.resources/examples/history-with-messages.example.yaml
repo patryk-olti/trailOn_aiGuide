@@ -1,0 +1,39 @@
+$kind: http-example
+name: historia z wiadomosciami
+order: 1000
+request:
+  url: '{{base_url}}/guide/history/48291'
+  method: GET
+response:
+  statusCode: 200
+  statusText: OK
+  headers:
+    - key: Content-Type
+      value: application/json
+  body:
+    type: json
+    content: |-
+      {
+        "participantId": "48291",
+        "conversations": [
+          {
+            "conversationId": "dc8e47a1-2c01-442f-a647-25cead1df3a1",
+            "createdAt": "2026-11-19T10:00:00.000Z",
+            "updatedAt": "2026-11-19T10:05:00.000Z",
+            "messages": [
+              {
+                "messageId": "6f1c0a2e-1b2c-4d3e-8f90-a1b2c3d4e5f6",
+                "role": "user",
+                "content": "Jakie szczyty w Karkonoszach polecasz na start?",
+                "createdAt": "2026-11-19T10:00:00.000Z"
+              },
+              {
+                "messageId": "7a2d1b3f-2c3d-4e4f-9012-b2c3d4e5f6a7",
+                "role": "assistant",
+                "content": "Na start polecam Szrenicę.",
+                "createdAt": "2026-11-19T10:00:02.000Z"
+              }
+            ]
+          }
+        ]
+      }

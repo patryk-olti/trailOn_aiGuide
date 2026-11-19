@@ -1,9 +1,19 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
 import { D1Service } from '../cloudflare/d1.service';
-import { trimTurnsToLimit } from './conversation-history.helpers';
-import { StoredChatTurn, ConversationRow, GuideMessageRow } from './conversation.types';
+import {
+  assembleParticipantHistory,
+  PARTICIPANT_HISTORY_CONVERSATION_LIMIT,
+  PARTICIPANT_HISTORY_MESSAGE_LIMIT,
+  trimTurnsToLimit,
+} from './conversation-history.helpers';
+import {
+  StoredChatTurn,
+  ConversationRow,
+  GuideMessageRow,
+  ParticipantHistory,
+} from './conversation.types';
 
 @Injectable()
 export class ConversationHistoryService {
@@ -59,6 +69,38 @@ export class ConversationHistoryService {
       [newId, trimmedParticipant, now, now],
     );
     return newId;
+  }
+
+  /**
+   * Ostatnie konwersacje uczestnika (max 5) wraz z ostatnimi wiadomościami każdej z nich (max 5).
+   */
+  async getHistoryForParticipant(participantId: string): Promise<ParticipantHistory> {
+    const trimmedParticipant = participantId.trim();
+    if (!trimmedParticipant || trimmedParticipant.length > 256) {
+      throw new BadRequestException('participantId musi mieć od 1 do 256 znaków.');
+    }
+
+    const conversations = await this.d1.query<ConversationRow>(
+      `SELECT conversation_id, participant_id, created_at, updated_at FROM ${this.conversationsTable} WHERE participant_id = ? ORDER BY updated_at DESC LIMIT ?`,
+      [trimmedParticipant, PARTICIPANT_HISTORY_CONVERSATION_LIMIT],
+    );
+    if (conversations.length === 0) {
+      return assembleParticipantHistory(trimmedParticipant, [], []);
+    }
+
+    const placeholders = conversations.map(() => '?').join(', ');
+    const messages = await this.d1.query<GuideMessageRow>(
+      `SELECT message_id, conversation_id, role, content, created_at FROM (
+        SELECT message_id, conversation_id, role, content, created_at,
+               ROW_NUMBER() OVER (PARTITION BY conversation_id ORDER BY created_at DESC) AS rn
+        FROM ${this.messagesTable}
+        WHERE conversation_id IN (${placeholders})
+      ) ranked
+      WHERE rn <= ?`,
+      [...conversations.map((row) => row.conversation_id), PARTICIPANT_HISTORY_MESSAGE_LIMIT],
+    );
+
+    return assembleParticipantHistory(trimmedParticipant, conversations, messages);
   }
 
   async getRecentTurns(conversationId: string): Promise<StoredChatTurn[]> {

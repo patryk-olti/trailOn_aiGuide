@@ -1,0 +1,13 @@
+$kind: http-request
+name: 'GET guide history without token'
+method: GET
+url: '{{base_url}}/guide/history/{{participantId}}'
+order: 2000
+auth:
+  type: noauth
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test('status 401', () => pm.response.to.have.status(401));
+examples: './.resources/get-participant-history-unauthorized.resources/examples'
