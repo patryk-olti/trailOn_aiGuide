@@ -35,3 +35,16 @@ export interface GuideReply {
   sources: GuideSource[];
   usage: GuideUsage;
 }
+
+/**
+ * Strumień POST /guide (text/event-stream).
+ * delta to surowy tekst modelu. clear czyści ten tekst, gdy runda poszła w narzędzia.
+ * done.response to końcowy HTML — nim trzeba zastąpić złożone delty.
+ */
+export type GuideStreamEvent =
+  | { event: 'meta'; data: { conversationId: string } }
+  | { event: 'status'; data: { phase: 'prefetch' | 'tool'; name?: string; message: string } }
+  | { event: 'delta'; data: { text: string } }
+  | { event: 'clear'; data: Record<string, never> }
+  | { event: 'done'; data: GuideReply }
+  | { event: 'error'; data: { message: string } };

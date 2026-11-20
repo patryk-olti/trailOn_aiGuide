@@ -34,7 +34,13 @@ export interface CompletionOptions {
   toolChoice?: 'auto' | 'none';
   maxCompletionTokens?: number;
   temperature?: number;
+  signal?: AbortSignal;
 }
+
+export type CompletionStreamEvent =
+  | { kind: 'text'; text: string }
+  | { kind: 'tools' }
+  | { kind: 'result'; result: CompletionResult };
 
 export interface EmbedOptions {
   dimensions?: number;

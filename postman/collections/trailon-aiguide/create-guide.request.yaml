@@ -1,0 +1,26 @@
+$kind: http-request
+name: 'POST guide stream'
+method: POST
+url: '{{base_url}}/guide'
+order: 500
+headers:
+  - key: Accept
+    value: text/event-stream
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "participantId": "{{participantId}}",
+      "message": "Co zobaczyć w Górach Sowich?"
+    }
+examples: './.resources/create-guide.resources/examples'
+description: >-
+  Odpowiedź nie jest jednym JSON-em. To strumień text/event-stream.
+  Zdarzenia, każde zakończone pustą linią: meta (conversationId),
+  status (phase prefetch albo tool, pole message), delta (surowy fragment tekstu),
+  clear (wyczyść złożone delty, bo model poszedł w narzędzia),
+  done (jak dawna odpowiedź JSON: conversationId, response jako HTML, model, sources, usage),
+  error (message). Widok buduj z delt, a po done zastąp go polem response.
+  Błąd walidacji albo brak tokenu nadal wraca jako zwykły HTTP przed startem strumienia.

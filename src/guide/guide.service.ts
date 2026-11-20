@@ -23,7 +23,7 @@ import {
   suppressRepeatedBlogLinks,
   trailonGuideAnchor,
 } from './guide-response-html';
-import { GuideReply, GuideSource, GuideToolRequestContext, GuideUsage } from './guide.types';
+import { GuideSource, GuideStreamEvent, GuideToolRequestContext, GuideUsage } from './guide.types';
 
 const SYSTEM_PROMPT = `Jesteś przewodnikiem AI TrailOn. Pomagasz układać trasy i korzystasz z materiałów zespołu trailON (blog, biblioteka tras, szlaki długodystansowe) oraz katalogu szczytów w Cloudflare D1.
 Odpowiadaj po polsku, konkretnie i praktycznie. Uwzględniaj bezpieczeństwo i realia terenu.
@@ -49,6 +49,23 @@ Format odpowiedzi:
 - Nie używaj HTML w treści. Zwróć zwykły tekst z akapitami (puste linie) i listami w formie myślników.
 - Sekcje i wyróżnienia oznaczaj jako **Nazwa sekcji** (podwójne gwiazdki) — serwis zamieni to na pogrubienie w HTML.
 - Nie dodawaj sekcji "Źródła" — serwis doklei ją automatycznie z dokładnych pól url.`;
+
+function toolStatusMessage(name: string): string {
+  switch (name) {
+    case 'search_peaks':
+      return 'Szukam szczytów w katalogu…';
+    case 'search_materials':
+      return 'Przeglądam materiały…';
+    case 'get_material':
+      return 'Czytam materiał…';
+    case 'get_peak_weather':
+      return 'Sprawdzam pogodę…';
+    case 'search_library_routes':
+      return 'Szukam tras w bibliotece…';
+    default:
+      return 'Zbieram dane…';
+  }
+}
 
 function peakBlogBindings(sources: GuideSource[]): Array<{ name: string; url?: string }> {
   return sources
@@ -85,12 +102,18 @@ export class GuideService {
     this.tools = new GuideToolsExecutor(rag, d1, openMeteo, libraryRoutes);
   }
 
-  async reply(dto: CreateGuideDto): Promise<GuideReply> {
+  async *replyStream(dto: CreateGuideDto, signal?: AbortSignal): AsyncGenerator<GuideStreamEvent> {
     const questionAt = new Date().toISOString();
     const conversationId = await this.conversationHistory.resolveConversation(
       dto.participantId,
       dto.conversationId,
     );
+    yield { event: 'meta', data: { conversationId } };
+    this.throwIfAborted(signal);
+    yield {
+      event: 'status',
+      data: { phase: 'prefetch', message: 'Przeglądam materiały trailON…' },
+    };
     const priorTurns = await this.conversationHistory.getRecentTurns(conversationId);
 
     const usage: GuideUsage = {
@@ -212,23 +235,55 @@ export class GuideService {
     let round = 0;
 
     while (round <= this.maxToolRounds) {
-      const result = await this.openAi.complete(messages, {
+      this.throwIfAborted(signal);
+      let sawTools = false;
+      let streamedText = false;
+      let resultText: string | undefined;
+      let resultToolCalls: ChatMessage['tool_calls'] = [];
+      let resultModel = latestModel;
+      for await (const event of this.openAi.completeStream(messages, {
         tools: GUIDE_TOOLS,
         toolChoice: 'auto',
         maxCompletionTokens: this.maxCompletionTokens,
         temperature: 0.3,
-      });
-      usage.completionCalls += 1;
-      this.mergeUsage(usage, result.usage);
-      latestModel = result.model;
+        signal,
+      })) {
+        this.throwIfAborted(signal);
+        if (event.kind === 'tools') {
+          sawTools = true;
+          if (streamedText) {
+            yield { event: 'clear', data: {} };
+            streamedText = false;
+          }
+          continue;
+        }
+        if (event.kind === 'text') {
+          if (!sawTools && event.text) {
+            yield { event: 'delta', data: { text: event.text } };
+            streamedText = true;
+          }
+          continue;
+        }
+        resultText = event.result.text;
+        resultToolCalls = event.result.toolCalls ?? [];
+        resultModel = event.result.model;
+        usage.completionCalls += 1;
+        this.mergeUsage(usage, event.result.usage);
+        latestModel = resultModel;
+      }
 
-      if (result.toolCalls && result.toolCalls.length > 0) {
+      if (resultToolCalls.length > 0) {
         messages.push({
           role: 'assistant',
-          content: result.text ?? '',
-          tool_calls: result.toolCalls,
+          content: resultText ?? '',
+          tool_calls: resultToolCalls,
         });
-        for (const call of result.toolCalls) {
+        for (const call of resultToolCalls) {
+          this.throwIfAborted(signal);
+          yield {
+            event: 'status',
+            data: { phase: 'tool', name: call.name, message: toolStatusMessage(call.name) },
+          };
           const toolResult = await this.tools.execute(call.name, call.arguments, toolContext);
           if (call.name === 'search_materials' || call.name === 'get_material') {
             usage.embeddingCalls += 1;
@@ -247,7 +302,7 @@ export class GuideService {
         continue;
       }
 
-      finalText = result.text?.trim() ?? '';
+      finalText = resultText?.trim() ?? '';
       break;
     }
 
@@ -270,13 +325,24 @@ export class GuideService {
       questionAt,
     );
 
-    return {
-      conversationId,
-      response: this.formatHtmlResponse(finalText, sources),
-      model: latestModel,
-      sources,
-      usage,
+    yield {
+      event: 'done',
+      data: {
+        conversationId,
+        response: this.formatHtmlResponse(finalText, sources),
+        model: latestModel,
+        sources,
+        usage,
+      },
     };
+  }
+
+  private throwIfAborted(signal?: AbortSignal): void {
+    if (signal?.aborted) {
+      const error = new Error('The operation was aborted');
+      error.name = 'AbortError';
+      throw error;
+    }
   }
 
   private omitRepeatedBlogSources(

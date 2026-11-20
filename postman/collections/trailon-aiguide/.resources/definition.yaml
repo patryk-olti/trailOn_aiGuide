@@ -1,7 +1,8 @@
 $kind: collection
 name: trailon-aiguide
 description: >-
-  Odczyt historii rozmów przewodnika. Zwraca najwyżej 5 ostatnich konwersacji
+  Przewodnik odpowiada strumieniem SSE (POST /guide), a historia rozmów jest
+  zwykłym odczytem JSON. Historia zwraca najwyżej 5 ostatnich konwersacji
   uczestnika i w każdej najwyżej 5 ostatnich wiadomości.
 auth:
   type: bearer

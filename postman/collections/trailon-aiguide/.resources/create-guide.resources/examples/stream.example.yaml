@@ -1,0 +1,27 @@
+$kind: http-example
+name: strumień odpowiedzi
+order: 1000
+request:
+  url: '{{base_url}}/guide'
+  method: POST
+response:
+  statusCode: 200
+  statusText: OK
+  headers:
+    - key: Content-Type
+      value: text/event-stream; charset=utf-8
+  body:
+    type: text
+    content: |-
+      event: meta
+      data: {"conversationId":"6f1c0c3e-3c2a-4f1b-9c2d-0b7e5a1d4c90"}
+
+      event: status
+      data: {"phase":"prefetch","message":"Przeglądam materiały trailON…"}
+
+      event: delta
+      data: {"text":"Wielka Sowa "}
+
+      event: done
+      data: {"conversationId":"6f1c0c3e-3c2a-4f1b-9c2d-0b7e5a1d4c90","response":"<div class=\"trailon-guide-reply\"><p>Wielka Sowa</p></div>","model":"gpt","sources":[],"usage":{"promptTokens":1,"completionTokens":1,"totalTokens":2,"completionCalls":1,"embeddingCalls":1}}
+

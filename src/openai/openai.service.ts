@@ -9,7 +9,7 @@ import OpenAI from 'openai';
 import {
   ChatMessage,
   CompletionOptions,
-  CompletionResult,
+  CompletionStreamEvent,
   EmbedOptions,
   TokenUsage,
   ToolCall,
@@ -31,31 +31,80 @@ export class OpenAiService {
     this.embeddingModel = this.config.getOrThrow<string>('OPENAI_EMBEDDING_MODEL');
   }
 
-  async complete(messages: ChatMessage[], options?: CompletionOptions): Promise<CompletionResult> {
+  async *completeStream(
+    messages: ChatMessage[],
+    options?: CompletionOptions,
+  ): AsyncGenerator<CompletionStreamEvent> {
     try {
-      const completion = await this.client.chat.completions.create({
-        model: this.model,
-        messages: this.toApiMessages(messages),
-        tools: options?.tools,
-        tool_choice: options?.toolChoice,
-        max_completion_tokens: options?.maxCompletionTokens,
-        temperature: options?.temperature,
-      });
-      const choice = completion.choices[0];
-      const message = choice?.message;
-      const text = message?.content?.trim() || undefined;
-      const toolCalls = this.readToolCalls(message?.tool_calls);
-      if (!text && toolCalls.length === 0) {
+      const stream = await this.client.chat.completions.create(
+        {
+          model: this.model,
+          messages: this.toApiMessages(messages),
+          tools: options?.tools,
+          tool_choice: options?.toolChoice,
+          max_completion_tokens: options?.maxCompletionTokens,
+          temperature: options?.temperature,
+          stream: true,
+          stream_options: { include_usage: true },
+        },
+        { signal: options?.signal },
+      );
+
+      let text = '';
+      let model = this.model;
+      let finishReason: string | undefined;
+      let usage: TokenUsage | undefined;
+      let announcedTools = false;
+      const toolCalls = new Map<number, ToolCall>();
+
+      for await (const chunk of stream) {
+        if (chunk.model) {
+          model = chunk.model;
+        }
+        if (chunk.usage) {
+          usage = this.readUsage(chunk.usage);
+        }
+        const choice = chunk.choices[0];
+        if (choice?.finish_reason) {
+          finishReason = choice.finish_reason;
+        }
+        const delta = choice?.delta;
+        const content = delta?.content;
+        if (content) {
+          text += content;
+          yield { kind: 'text', text: content };
+        }
+        for (const call of delta?.tool_calls ?? []) {
+          this.accumulateToolCall(toolCalls, call);
+          if (!announcedTools) {
+            announcedTools = true;
+            yield { kind: 'tools' };
+          }
+        }
+      }
+
+      const calls = [...toolCalls.entries()]
+        .sort((left, right) => left[0] - right[0])
+        .map((entry) => entry[1])
+        .filter((call) => call.name.length > 0);
+      const trimmed = text.trim();
+      if (!trimmed && calls.length === 0) {
         throw new ServiceUnavailableException('OpenAI returned an empty response');
       }
-      return {
-        text,
-        model: completion.model,
-        toolCalls,
-        usage: this.readUsage(completion.usage),
-        finishReason: choice?.finish_reason,
+      yield {
+        kind: 'result',
+        result: {
+          text: trimmed || undefined,
+          model,
+          toolCalls: calls,
+          usage,
+          finishReason,
+        },
       };
     } catch (error) {
+      if (isAbortError(error)) {
+        throw error;
+      }
       if (
         error instanceof ServiceUnavailableException ||
         error instanceof BadGatewayException
@@ -120,24 +169,21 @@ export class OpenAiService {
     });
   }
 
-  private readToolCalls(
-    toolCalls: OpenAI.Chat.Completions.ChatCompletionMessage['tool_calls'] | undefined,
-  ): ToolCall[] {
-    if (!toolCalls) {
-      return [];
+  private accumulateToolCall(
+    toolCalls: Map<number, ToolCall>,
+    call: { index: number; id?: string; function?: { name?: string; arguments?: string } },
+  ): void {
+    const current = toolCalls.get(call.index) ?? { id: '', name: '', arguments: '' };
+    if (call.id) {
+      current.id = call.id;
     }
-    const out: ToolCall[] = [];
-    for (const call of toolCalls) {
-      if (call.type !== 'function') {
-        continue;
-      }
-      out.push({
-        id: call.id,
-        name: call.function.name,
-        arguments: call.function.arguments,
-      });
+    if (call.function?.name) {
+      current.name += call.function.name;
     }
-    return out;
+    if (call.function?.arguments) {
+      current.arguments += call.function.arguments;
+    }
+    toolCalls.set(call.index, current);
   }
 
   private readUsage(
@@ -152,4 +198,8 @@ export class OpenAiService {
       totalTokens: usage.total_tokens,
     };
   }
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && /abort/i.test(error.name);
 }
