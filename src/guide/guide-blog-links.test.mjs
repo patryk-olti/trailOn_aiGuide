@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   annotatePeakElevations,
   collectCitedBlogUrls,
+  stripTrailingOffer,
   plainTextToGuideHtml,
   presentBlogLinkLine,
   stripMismatchedPeakBlogUrls,
@@ -156,6 +157,28 @@ test('przy nazwie szczytu dopisuje wysokość w nawiasach', () => {
   assert.equal(
     annotatePeakElevations('Małołączniakowy grzbiet.', peaks),
     'Małołączniakowy grzbiet.',
+  );
+});
+
+test('kompletna odpowiedź nie kończy się zaproszeniem do kolejnego pytania', () => {
+  const answer = [
+    'Małołączniak (2096 m.n.p.m.) leży w Czerwonych Wierchach.',
+    '',
+    'Jeśli potrzebujesz więcej informacji lub chcesz zaplanować trasę, daj znać!',
+  ].join('\n');
+  assert.equal(
+    stripTrailingOffer(answer),
+    'Małołączniak (2096 m.n.p.m.) leży w Czerwonych Wierchach.',
+  );
+  assert.equal(
+    stripTrailingOffer(
+      'Szlak jest otwarty. Jeśli potrzebujesz więcej informacji lub chcesz zaplanować trasę, daj znać!',
+    ),
+    'Szlak jest otwarty.',
+  );
+  assert.equal(
+    stripTrailingOffer('Nie mam pogody bez szczytu. Daj znać, który z tych trzech wybierasz.'),
+    'Nie mam pogody bez szczytu. Daj znać, który z tych trzech wybierasz.',
   );
 });
 

@@ -21,6 +21,7 @@ import {
   isTrailonBlogUrl,
   plainTextToGuideHtml,
   stripMismatchedPeakBlogUrls,
+  stripTrailingOffer,
   suppressRepeatedBlogLinks,
   trailonGuideAnchor,
 } from './guide-response-html';
@@ -73,7 +74,8 @@ Format odpowiedzi:
 - Nazwę szczytu zapisuj jako „Nazwa (wysokość z katalogu m.n.p.m.)”. Liczba musi pochodzić z katalogu albo z materiałów tego szczytu.
 - Nie używaj HTML w treści. Zwróć zwykły tekst z akapitami (puste linie) i listami w formie myślników.
 - Sekcje i wyróżnienia oznaczaj jako **Nazwa sekcji** (podwójne gwiazdki) — serwis zamieni to na pogrubienie w HTML.
-- Nie dodawaj sekcji "Źródła" — serwis doklei ją automatycznie z dokładnych pól url.`;
+- Nie dodawaj sekcji "Źródła" — serwis doklei ją automatycznie z dokładnych pól url.
+- Gdy odpowiedź już pokrywa pytanie, zakończ na ostatnim fakcie. Nie dopisuj zaproszenia w stylu „Jeśli potrzebujesz więcej informacji lub chcesz zaplanować trasę, daj znać!”. Takie zdanie dodawaj tylko wtedy, gdy do odpowiedzi brakuje konkretu, o który naprawdę trzeba dopytać (który szczyt, który dzień, skąd start).`;
 
 function toolStatusMessage(name: string): string {
   switch (name) {
@@ -350,6 +352,7 @@ export class GuideService {
     ]);
     finalText = stripMismatchedPeakBlogUrls(finalText, peakBlogBindings(sources));
     finalText = suppressRepeatedBlogLinks(finalText, alreadyCitedBlogs);
+    finalText = stripTrailingOffer(finalText);
 
     await this.conversationHistory.appendExchange(
       conversationId,

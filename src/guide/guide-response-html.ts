@@ -123,6 +123,71 @@ export function suppressRepeatedBlogLinks(text: string, alreadyCited: ReadonlySe
   return cleanupDanglingBlogLeadIn(replaced);
 }
 
+const GENERIC_OFFER =
+  /\b(daj znać|dajcie znać|napisz(?:cie)?|odezwij się|więcej informacji|zaplanować trasę|dodatkowych pytań|kolejnych pytań|chętnie pomogę|mogę pomóc|jeśli (?:potrzebujesz|chcesz|masz))\b/i;
+const SPECIFIC_FOLLOW_UP =
+  /\b(który|którą|które|którego|której|jaki|jaka|jakie|jakiego|kiedy|gdzie|skąd)\b/i;
+
+/** Ucina końcowe „daj znać”, gdy odpowiedź jest już kompletna. Dopytanie o brakujący konkret zostaje. */
+export function stripTrailingOffer(text: string): string {
+  const trimmed = (text ?? '').trim();
+  if (!trimmed) {
+    return text;
+  }
+  const blocks = trimmed.split(/\n{2,}/);
+  const lastIndex = blocks.length - 1;
+  const kept = stripOfferFromBlock(blocks[lastIndex] ?? '', blocks.length > 1);
+  if (kept === (blocks[lastIndex] ?? '')) {
+    return trimmed;
+  }
+  if (!kept) {
+    blocks.pop();
+  } else {
+    blocks[lastIndex] = kept;
+  }
+  return blocks.join('\n\n').trim();
+}
+
+function stripOfferFromBlock(block: string, hasEarlierBlock: boolean): string {
+  const lines = block.split('\n');
+  let removedLine = false;
+  while (lines.length > 0 && isGenericOffer(lines[lines.length - 1] ?? '')) {
+    if (lines.length === 1 && !hasEarlierBlock) {
+      break;
+    }
+    lines.pop();
+    removedLine = true;
+  }
+  let joined = lines.join('\n').trim();
+  if (!joined) {
+    return '';
+  }
+  const sentences = joined.split(/(?<=[.!?])\s+/);
+  let removedSentence = false;
+  while (sentences.length > 1 && isGenericOffer(sentences[sentences.length - 1] ?? '')) {
+    sentences.pop();
+    removedSentence = true;
+  }
+  if (!removedLine && !removedSentence) {
+    return block;
+  }
+  if (removedSentence) {
+    joined = sentences.join(' ').trim();
+  }
+  return joined;
+}
+
+function isGenericOffer(value: string): boolean {
+  const line = value.trim();
+  if (!line || line.length > 280) {
+    return false;
+  }
+  if (SPECIFIC_FOLLOW_UP.test(line)) {
+    return false;
+  }
+  return GENERIC_OFFER.test(line);
+}
+
 function cleanupDanglingBlogLeadIn(text: string): string {
   return text
     .replace(/\(\s*\)/g, '')
