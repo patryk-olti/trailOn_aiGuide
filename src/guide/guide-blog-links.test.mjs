@@ -199,7 +199,14 @@ test('szczyt z listy dostaje link mapy, szczyt bez id nie', () => {
     { id: 'sniezka', name: 'Śnieżka', elevationM: 1602 },
     { name: 'Chojnik', elevationM: 627 },
   ]);
-  assert.match(next, /Na mapie: https:\/\/trailon\.pl\/map\?peakId=sniezka/);
+  assert.match(next, /https:\/\/trailon\.pl\/map\?peakId=sniezka/);
+  const html = plainTextToGuideHtml(next, new Map());
+  assert.match(html, />Sprawdź na mapie<\/a>/);
+  assert.match(html, /data-trailon-peak-id="sniezka"/);
+  assert.equal(html.includes('target='), false);
+  const fromLeadIn = plainTextToGuideHtml('Na mapie: https://trailon.pl/map?peakId=sniezka', new Map());
+  assert.match(fromLeadIn, />Sprawdź na mapie<\/a>/);
+  assert.equal(fromLeadIn.includes('Na mapie'), false);
   assert.equal(next.includes('peakId=chojnik'), false);
   const again = annotatePeakMapLinks(next, [{ id: 'sniezka', name: 'Śnieżka', elevationM: 1602 }]);
   assert.equal(again.split('peakId=sniezka').length - 1, 1);

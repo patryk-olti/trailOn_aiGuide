@@ -533,7 +533,7 @@ export class GuideToolsExecutor {
         ? ` | url bloga (w odpowiedzi napisz „Link do bloga: ${blogUrl}”, adres kopiuj 1:1)`
         : ' | brak potwierdzonego url bloga — nie podawaj linku do bloga';
       const mapUrl = peakMapUrl(row.peak_id);
-      const mapPart = ` | url mapy (w odpowiedzi napisz „Na mapie: ${mapUrl}”, adres kopiuj 1:1)`;
+      const mapPart = ` | url mapy (w odpowiedzi wklej sam adres w osobnej linii, 1:1: ${mapUrl})`;
       lines.push(
         `${row.name} (${row.elevation_m} m.n.p.m.) | pasmo: ${row.range_name}${distance} | id=${row.peak_id}${blogPart}${mapPart}\nKatalog D1: ${description}${blogExcerpt}`,
       );

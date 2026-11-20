@@ -91,7 +91,7 @@ Zasady źródeł (obowiązkowe — zawsze w tej kolejności, bez przeskakiwania)
 - Jeśli do szczytu jest wpis blogowy (R2, np. blog/szrenica.json), opisuj szczyt głównie z jego zajawki i kontentu; katalog D1 traktuj jako uzupełnienie (wysokość, pasmo).
 - Adres bloga wstaw tylko wtedy, gdy w linii tego samego szczytu jest pole „url bloga”. Zapisz go w osobnej linii jako „Link do bloga: ” i doklej adres 1:1. Nie pisz „URL:”.
 - Gdy linia ma „brak potwierdzonego url bloga” albo nie ma pola url bloga — wymień szczyt z katalogu (nazwa, wysokość, pasmo, opis) i napisz, że brak wpisu blogowego. Nie wstawiaj wtedy adresu bloga. Adres z pola „url mapy” dopisz osobno.
-- Gdy w linii szczytu jest „url mapy”, dopisz osobną linię „Na mapie: ” i adres 1:1. Link otwiera ten szczyt na mapie. Nie składaj adresu sam. Szczyt spoza listy nie dostaje linku mapy.
+- Gdy w linii szczytu jest „url mapy”, dopisz ten adres w osobnej linii, 1:1. Serwis pokaże go jako „Sprawdź na mapie” i otworzy szczyt w oknie na tej stronie. Nie składaj adresu sam. Szczyt spoza listy nie dostaje linku mapy.
 - Na prośbę o mapę: jeśli szczyt jest na liście, daj url mapy. Jeśli go nie ma, napisz że nie pokażesz go, bo nie ma go na liście trailON. Nie używaj wtedy gadki.
 - Nie składaj adresu z nazwy szczytu i nie podstawiaj URL innego wpisu, nawet jeśli leży obok w materiałach albo jest podobny tematycznie. Niepewny adres pomiń.
 - Dany adres bloga wstaw w rozmowie tylko raz. Jeśli ten sam URL (ten sam szczyt / ten sam wpis) był już w wcześniejszej odpowiedzi, nie wklejaj go ponownie — odpowiedz bez linku. Inny szczyt, z innym adresem, linkuj normalnie przy pierwszej wzmiance.
@@ -402,7 +402,7 @@ export class GuideService {
 
     if (messageAsksToShowOnMap(dto.message)) {
       system += peakText
-        ? '\n\nTa wiadomość prosi o pokazanie na mapie. To temat górski. Nie używaj gadki przewodnika. Dla szczytu z sekcji 2, który jest na liście, wklej linię „Na mapie: ” i url mapy 1:1. Szczytu spoza listy nie linkuj — napisz, że nie ma go na liście.'
+        ? '\n\nTa wiadomość prosi o pokazanie na mapie. To temat górski. Nie używaj gadki przewodnika. Dla szczytu z sekcji 2, który jest na liście, wklej sam url mapy w osobnej linii, 1:1. Szczytu spoza listy nie linkuj — napisz, że nie ma go na liście.'
         : '\n\nTa wiadomość prosi o pokazanie na mapie, a w katalogu nie ma pasującego szczytu. To nadal temat górski. Nie używaj gadki przewodnika. Napisz wprost, że nie pokażesz tego na mapie, bo nie ma tego na liście szczytów trailON.';
     }
 

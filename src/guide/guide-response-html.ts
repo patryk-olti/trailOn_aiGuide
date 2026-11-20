@@ -418,6 +418,9 @@ function isInsideUrl(text: string, index: number): boolean {
 
 const PEAK_MAP_ID = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,80}$/;
 
+/** Tekst linku, który czat otwiera jako popup szczytu. */
+export const PEAK_MAP_LINK_LABEL = 'Sprawdź na mapie';
+
 /** Adres, który czat otwiera jako popup szczytu (fioletowy, animowany marker). */
 export function peakMapUrl(peakId: string): string {
   return `https://trailon.pl/map?peakId=${encodeURIComponent(peakId)}`;
@@ -445,7 +448,7 @@ export function peakIdFromMapUrl(url: string): string | undefined {
 }
 
 /**
- * Przy nazwie szczytu z katalogu dopisuje linię „Na mapie: ” z adresem popup.
+ * Przy nazwie szczytu z katalogu dopisuje adres popup. Serwis zamienia go na „Sprawdź na mapie”.
  * Szczyt bez id (spoza listy) zostaje bez linku.
  */
 export function annotatePeakMapLinks(text: string, peaks: readonly GuidePeakElevation[]): string {
@@ -469,7 +472,7 @@ export function annotatePeakMapLinks(text: string, peaks: readonly GuidePeakElev
       if (used.has(peak.id) || !lineMentionsPeak(line, peak.name)) {
         continue;
       }
-      out.push(`Na mapie: ${peakMapUrl(peak.id)}`);
+      out.push(peakMapUrl(peak.id));
       used.add(peak.id);
     }
   }
@@ -524,12 +527,12 @@ export function formatCatalogPeakMapReply(peaks: readonly GuidePeakElevation[]):
         Number.isFinite(peak.elevationM) && peak.elevationM > 0
           ? ` (${Math.round(peak.elevationM)} m.n.p.m.)`
           : '';
-      return `${peak.name}${elevation}\nNa mapie: ${peakMapUrl(peak.id!)}`;
+      return `${peak.name}${elevation}\n${peakMapUrl(peak.id!)}`;
     });
   if (lines.length === 0) {
     return '';
   }
-  return `Na mapie:\n\n${lines.join('\n\n')}`;
+  return lines.join('\n\n');
 }
 
 function uniqueMappedPeaks(
@@ -626,6 +629,13 @@ export function escapeHtml(value: string): string {
 export function trailonGuideAnchor(href: string, label: string): string {
   const safeHref = escapeHtml(href);
   const safeLabel = escapeHtml(label);
+  const peakId = peakIdFromMapUrl(href);
+  if (peakId) {
+    return (
+      `<a href="${safeHref}" class="trailon-guide-link" style="color:${TRAILON_GUIDE_LINK_COLOR}" ` +
+      `data-trailon-peak-id="${escapeHtml(peakId)}">${safeLabel}</a>`
+    );
+  }
   return `<a href="${safeHref}" class="trailon-guide-link" style="color:${TRAILON_GUIDE_LINK_COLOR}" target="_blank" rel="noopener noreferrer">${safeLabel}</a>`;
 }
 
@@ -682,16 +692,15 @@ export function formatInlineParagraphToHtml(
       if (token.kind === 'bold') {
         return `<strong>${escapeHtml(token.value)}</strong>`;
       }
+      if (peakIdFromMapUrl(token.url)) {
+        return trailonGuideAnchor(token.url, PEAK_MAP_LINK_LABEL);
+      }
       const normalized = normalizeTrailonUrl(token.url);
-      const mappedTitle =
+      const title =
         urlTitles.get(normalized) ??
         resolveTitle?.(token.url) ??
         industrySourceLabel(token.url) ??
         (token.url.startsWith('https://trailon.pl/') ? titleFromTrailonUrl(token.url) : 'Źródło');
-      const title =
-        peakIdFromMapUrl(token.url) && (mappedTitle === 'Map' || mappedTitle === 'Źródło')
-          ? 'Pokaż na mapie'
-          : mappedTitle;
       return trailonGuideAnchor(token.url, title);
     })
     .join('');
@@ -730,6 +739,7 @@ function splitGuideBlocks(text: string): string[][] {
 }
 
 const BLOG_LINK_LEAD_IN = /^(?:url|link|adres(?:\s+bloga)?)\s*[:\-–—]\s*/i;
+const PEAK_MAP_LEAD_IN = /^(?:na mapie|sprawdź na mapie|sprawdz na mapie|pokaż na mapie|pokaz na mapie)\s*[:\-–—]?\s*/i;
 
 /** Linia z samym adresem wpisu dostaje ludzki wstęp „Link do bloga:”. */
 export function presentBlogLinkLine(line: string): string {
@@ -753,6 +763,24 @@ export function presentBlogLinkLine(line: string): string {
   return `Link do bloga: ${href}`;
 }
 
+/** Linia „Na mapie: URL” albo sam adres szczytu zostaje gołym URL — etykietą linku jest „Sprawdź na mapie”. */
+export function presentPeakMapLinkLine(line: string): string {
+  const stripped = line.replace(PEAK_MAP_LEAD_IN, '').trim();
+  const match = /https:\/\/(?:www\.)?trailon\.pl\/map\?peakId=[^\s<>"')\]]+/i.exec(stripped);
+  if (!match) {
+    return line;
+  }
+  const { href } = trimUrlTrailingPunctuation(match[0]);
+  if (!peakIdFromMapUrl(href)) {
+    return line;
+  }
+  const withoutUrl = stripped.replace(match[0], '').trim();
+  if (withoutUrl.length > 0) {
+    return line;
+  }
+  return href;
+}
+
 export function plainTextToGuideHtml(
   text: string,
   urlTitles: Map<string, string>,
@@ -765,7 +793,9 @@ export function plainTextToGuideHtml(
   return splitGuideBlocks(trimmed)
     .map((lines, index) => {
       const inner = lines
-        .map((line) => formatInlineParagraphToHtml(presentBlogLinkLine(line), urlTitles, resolveTitle))
+        .map((line) =>
+          formatInlineParagraphToHtml(presentPeakMapLinkLine(presentBlogLinkLine(line)), urlTitles, resolveTitle),
+        )
         .join('<br/>');
       const gapBefore = index > 0 && isNumberedItemStart(lines[0] ?? '');
       const style = gapBefore ? ` style="margin-top:${NUMBERED_ITEM_GAP}"` : '';
