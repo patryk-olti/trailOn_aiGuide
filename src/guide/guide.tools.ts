@@ -1,6 +1,7 @@
 import type { ChatCompletionTool } from 'openai/resources/chat/completions';
 import { D1Service } from '../cloudflare/d1.service';
 import { PeakRow } from '../cloudflare/d1.types';
+import { BlogPostRef, blogIdentityMatchesPeak } from '../rag/rag-blog-lookup';
 import { RagIndexService } from '../rag/rag-index.service';
 import { RAG_MAX_TOOL_TEXT_CHARS } from '../rag/rag.constants';
 import { RagContentSource, RAG_SOURCE_LOCATIONS } from '../rag/rag.constants';
@@ -81,7 +82,7 @@ export const GUIDE_TOOLS: ChatCompletionTool[] = [
     function: {
       name: 'get_peak_weather',
       description:
-        'Pobiera pogodę dla szczytu z katalogu trailON lub podanych współrzędnych. Dane z Open-Meteo (jak karta pogody w aplikacji TrailOn / repo peak). scope=current: warunki teraz; scope=weekend: prognoza na najbliższą sobotę lub niedzielę (południe, Europe/Warsaw). Używaj przy pytaniach o temperaturę, wiatr, opady i czy warto iść w góry.',
+        'Pobiera pogodę dla szczytu z katalogu trailON lub podanych współrzędnych. Dane z Open-Meteo (jak karta pogody w aplikacji TrailOn / repo peak). scope=current: warunki teraz; scope=weekend: prognoza na najbliższą sobotę lub niedzielę (południe, Europe/Warsaw). Używaj przy pytaniach o temperaturę, wiatr, opady i czy warto iść w góry. Gdy nie da się podać pogody, wynik zawiera szczyty w promieniu maksymalnie 5 km od punktu użytkownika — dopytaj o nie, nie zgaduj prognozy.',
       parameters: {
         type: 'object',
         properties: {
@@ -153,7 +154,7 @@ export class GuideToolsExecutor {
       return this.searchPeaks(args, request);
     }
     if (name === 'get_peak_weather') {
-      return runGetPeakWeather(args, this.d1, this.weather);
+      return runGetPeakWeather(args, this.d1, this.weather, request?.location);
     }
     if (name === 'search_library_routes') {
       return this.searchLibraryRoutes(args);
@@ -323,8 +324,6 @@ export class GuideToolsExecutor {
       };
     }
 
-    const blogLinkMinScore = 0.22;
-
     if (hasGeo && !isValidLatLng(nearLat, nearLng)) {
       return { text: 'Nieprawidłowe współrzędne do wyszukiwania w pobliżu.', sourceKeys: [] };
     }
@@ -366,24 +365,10 @@ export class GuideToolsExecutor {
     const sources: GuideSource[] = [];
     const lines: string[] = [];
     const sourceKeys: string[] = [];
-    let embeddingCalls = 0;
 
-    const resolved = [];
-    for (const row of rows) {
-      const blogPost = this.rag.findBlogForPeakName(row.name);
-      let blogUrl = blogPost?.url ?? blogUrlFromTags(row.tags_json);
-      if (!blogUrl) {
-        blogUrl = await this.findBlogUrlForPeak(row.name, row.range_name, blogLinkMinScore);
-        embeddingCalls += 1;
-      }
-      resolved.push({ row, blogPost, blogUrl });
-    }
+    const resolved = rows.map((row) => ({ row, ...this.confirmedBlogForPeak(row) }));
 
-    // Jeśli mamy jakiekolwiek wpisy blogowe, zwracamy tylko te szczyty — to źródło prawdy.
-    const withBlog = resolved.filter((entry) => Boolean(entry.blogUrl));
-    const chosen = withBlog.length > 0 ? withBlog : resolved;
-
-    for (const { row, blogPost, blogUrl } of chosen) {
+    for (const { row, blogPost, blogUrl } of resolved) {
       if (blogUrl) {
         sources.push({
           id: row.peak_id,
@@ -420,7 +405,9 @@ export class GuideToolsExecutor {
         typeof row.distance_km === 'number'
           ? ` | ~${row.distance_km.toFixed(1)} km`
           : '';
-      const blogPart = blogUrl ? ` | url bloga (kopiuj dosłownie): ${blogUrl}` : '';
+      const blogPart = blogUrl
+        ? ` | url bloga (w odpowiedzi napisz „Link do bloga: ${blogUrl}”, adres kopiuj 1:1)`
+        : ' | brak potwierdzonego url bloga — nie podawaj linku';
       lines.push(
         `${row.name} (${row.elevation_m} m, ${row.range_name}${distance}) | id=${row.peak_id}${blogPart}\nKatalog D1: ${description}${blogExcerpt}`,
       );
@@ -429,25 +416,22 @@ export class GuideToolsExecutor {
       text: truncate(lines.join('\n\n'), RAG_MAX_TOOL_TEXT_CHARS),
       sourceKeys,
       sources,
-      embeddingCalls,
     };
   }
 
-  private async findBlogUrlForPeak(
-    name: string,
-    rangeName: string,
-    minScore: number,
-  ): Promise<string | undefined> {
-    const fromIndex = this.rag.findBlogForPeakName(name);
-    if (fromIndex?.url) {
-      return fromIndex.url;
+  private confirmedBlogForPeak(row: { name: string; tags_json?: string | null }): {
+    blogPost?: BlogPostRef;
+    blogUrl?: string;
+  } {
+    const indexed = this.rag.findBlogForPeakName(row.name);
+    if (indexed?.url && blogIdentityMatchesPeak(row.name, { url: indexed.url })) {
+      return { blogPost: indexed, blogUrl: indexed.url };
     }
-    const hits = await this.rag.searchByQuery(`${name} ${rangeName}`, {
-      source: 'blog',
-      limit: 3,
-      minScore,
-    });
-    return hits.find((hit) => hit.url)?.url;
+    const fromTags = blogUrlFromTags(row.tags_json);
+    if (fromTags && blogIdentityMatchesPeak(row.name, { url: fromTags })) {
+      return { blogUrl: fromTags };
+    }
+    return {};
   }
 }
 

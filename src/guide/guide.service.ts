@@ -19,6 +19,7 @@ import {
   collectCitedBlogUrls,
   isTrailonBlogUrl,
   plainTextToGuideHtml,
+  stripMismatchedPeakBlogUrls,
   suppressRepeatedBlogLinks,
   trailonGuideAnchor,
 } from './guide-response-html';
@@ -34,19 +35,26 @@ Zasady źródeł (obowiązkowe):
 - Gdy w pytaniu pada pasmo lub szczyty, najpierw korzystaj z tych danych; nie twórz listy szczytów z ogólnej wiedzy modelu.
 - W odpowiedzi domyślnie wymieniaj MAKSYMALNIE 3 szczyty. Jeśli użytkownik wyraźnie prosi o większą liczbę (np. „wymień 5 szczytów”), możesz podać więcej i dopasować limit w search_peaks.
 - Jeśli do szczytu jest wpis blogowy (R2, np. blog/szrenica.json), opisuj szczyt głównie z jego zajawki i kontentu; katalog D1 traktuj jako uzupełnienie (wysokość, pasmo).
-- Jeśli opisujesz jakiś szczyt, MUSI istnieć jego URL blogowy w danych (pole url w materiale lub url bloga z katalogu). Jeśli nie ma URL — nie opisuj tego szczytu i napisz wprost, że brak wpisu blogowego.
-- Link do bloga kopiuj wyłącznie z pola url w materiale (np. https://trailon.pl/przewodnik/karkonosze/szrenica). Nie wymyślaj ani nie składaj innych adresów.
-- W treści możesz wstawić adres bloga skopiowany z pola url w danych (np. przy opisie szczytu); serwis zamieni go na link z tytułem wpisu.
+- Adres bloga wstaw tylko wtedy, gdy w linii tego samego szczytu jest pole „url bloga”. Zapisz go w osobnej linii jako „Link do bloga: ” i doklej adres 1:1. Nie pisz „URL:”.
+- Gdy linia ma „brak potwierdzonego url bloga” albo nie ma pola url — wymień szczyt z katalogu (nazwa, wysokość, pasmo, opis) i napisz, że brak wpisu blogowego. Nie wstawiaj wtedy żadnego linku.
+- Nie składaj adresu z nazwy szczytu i nie podstawiaj URL innego wpisu, nawet jeśli leży obok w materiałach albo jest podobny tematycznie. Niepewny adres pomiń.
 - Dany adres bloga wstaw w rozmowie tylko raz. Jeśli ten sam URL (ten sam szczyt / ten sam wpis) był już w wcześniejszej odpowiedzi, nie wklejaj go ponownie — odpowiedz bez linku. Inny szczyt, z innym adresem, linkuj normalnie przy pierwszej wzmiance.
 - Jeśli po narzędziach i prefetch brak wpisów — powiedz to wprost; nie uzupełniaj odpowiedzi z pamięci modelu.
 Pogoda:
 - Na pytania o pogodę, wiatr, temperaturę na szczycie lub „na weekend” wywołaj get_peak_weather (najpierw search_peaks jeśli nie masz peak_id).
 - scope=weekend gdy użytkownik pyta o sobotę, niedzielę lub wyjazd na weekend; w przeciwnym razie scope=current.
 - Opisuj wyłącznie dane z narzędzia (Open-Meteo); nie zgaduj prognozy z pamięci modelu.
+- Jeśli get_peak_weather nie poda pogody, nie wymyślaj prognozy. Dopytaj użytkownika o szczyt z listy w wyniku narzędzia: tylko szczyty w promieniu maksymalnie 5 km od jego punktu, do których da się odnieść pogodę. Nie proponuj szczytów dalej i nie poszerzaj promienia.
 Format odpowiedzi:
 - Nie używaj HTML w treści. Zwróć zwykły tekst z akapitami (puste linie) i listami w formie myślników.
 - Sekcje i wyróżnienia oznaczaj jako **Nazwa sekcji** (podwójne gwiazdki) — serwis zamieni to na pogrubienie w HTML.
 - Nie dodawaj sekcji "Źródła" — serwis doklei ją automatycznie z dokładnych pól url.`;
+
+function peakBlogBindings(sources: GuideSource[]): Array<{ name: string; url?: string }> {
+  return sources
+    .filter((source) => isPeakSourceLabel(source.source))
+    .map((source) => ({ name: source.title, url: source.url }));
+}
 
 function isPeakSourceLabel(source: string): boolean {
   // kompatybilność wsteczna (stare wartości) + nowe "realne miejsca"
@@ -107,7 +115,8 @@ export class GuideService {
       const radiusKm = dto.location.radiusKm ?? 100;
       system +=
         `\n\nPozycja użytkownika (GPS): szerokość ${dto.location.lat}, długość ${dto.location.lng}, domyślny promień szczytów ${radiusKm} km.` +
-        ' Przy pytaniach o szczyty w pobliżu wywołaj search_peaks z minElevationM i ewentualnie radiusKm; nearLat/nearLng możesz pominąć — użyjemy współrzędnych z żądania.';
+        ' Przy pytaniach o szczyty w pobliżu wywołaj search_peaks z minElevationM i ewentualnie radiusKm; nearLat/nearLng możesz pominąć — użyjemy współrzędnych z żądania.' +
+        ' Przy pytaniu o pogodę bez szczytu, którego da się użyć, get_peak_weather samo wskaże szczyty w promieniu maksymalnie 5 km — dopytaj tylko o nie.';
     }
     const contextBlock = this.formatPrefetch(prefetched);
     if (contextBlock) {
@@ -247,11 +256,12 @@ export class GuideService {
         'Nie udało się przygotować odpowiedzi. Spróbuj przeformułować pytanie lub zawęzić temat.';
     }
 
-    finalText = suppressRepeatedBlogLinks(finalText, alreadyCitedBlogs);
     const sources = this.omitRepeatedBlogSources(
       this.buildSources([...sourceIds], prefetched, resolvedSources),
       alreadyCitedBlogs,
     );
+    finalText = stripMismatchedPeakBlogUrls(finalText, peakBlogBindings(sources));
+    finalText = suppressRepeatedBlogLinks(finalText, alreadyCitedBlogs);
 
     await this.conversationHistory.appendExchange(
       conversationId,

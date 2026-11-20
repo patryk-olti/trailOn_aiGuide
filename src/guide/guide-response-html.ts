@@ -1,3 +1,4 @@
+import { normalizePeakName } from '../rag/rag-blog-lookup';
 import { GuideSource } from './guide.types';
 
 /** Kolor jak przycisk „Współpracuj z nami” / filtry na trailon.pl (rgb(254, 95, 0)). */
@@ -117,7 +118,7 @@ function cleanupDanglingBlogLeadIn(text: string): string {
   return text
     .replace(/\(\s*\)/g, '')
     .replace(
-      /[ \t]*(?:więcej(?:\s+na\s+blogu)?|link(?:\s+do\s+bloga)?|zobacz|szczegóły)\s*[:\-–—]\s*(?=[,.;:!?]|$)/gim,
+      /[ \t]*(?:url|więcej(?:\s+na\s+blogu)?|link(?:\s+do\s+bloga)?|zobacz|szczegóły)\s*[:\-–—]\s*(?=[,.;:!?]|$)/gim,
       '',
     )
     .replace(/([.!?])\s*[.]+/g, '$1')
@@ -126,6 +127,81 @@ function cleanupDanglingBlogLeadIn(text: string): string {
     .replace(/[ \t]+$/gm, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+}
+
+export interface PeakBlogBinding {
+  name: string;
+  url?: string;
+}
+
+/**
+ * W sekcji szczytu zostawia tylko jego potwierdzony adres bloga.
+ * Cudzy lub niepewny URL (także z sąsiedniego materiału) jest usuwany.
+ */
+export function stripMismatchedPeakBlogUrls(
+  text: string,
+  peaks: ReadonlyArray<PeakBlogBinding>,
+): string {
+  const known = peaks
+    .map((peak) => ({ name: peak.name.trim(), url: peak.url?.trim() || undefined }))
+    .filter((peak) => peak.name.length > 0)
+    .sort((left, right) => right.name.length - left.name.length);
+  if (!text || known.length === 0) {
+    return text;
+  }
+
+  let current: PeakBlogBinding | undefined;
+  const rewritten = text.split(/\r?\n/).map((line) => {
+    const mentioned = known.find((peak) => lineMentionsPeak(line, peak.name));
+    if (mentioned) {
+      current = mentioned;
+    }
+    if (!current) {
+      return line;
+    }
+    const allowed = current.url ? blogUrlKey(current.url) : '';
+    return line.replace(blogLinkPattern(), (full, label: string | undefined, mdUrl: string | undefined) => {
+      const rawUrl = mdUrl ?? full;
+      const { href, suffix } = mdUrl
+        ? { href: rawUrl, suffix: '' }
+        : trimUrlTrailingPunctuation(rawUrl);
+      if (!isTrailonBlogUrl(href)) {
+        return full;
+      }
+      if (allowed && blogUrlKey(href) === allowed) {
+        return full;
+      }
+      if (label !== undefined && blogUrlKey(label) !== blogUrlKey(href)) {
+        return label;
+      }
+      return suffix;
+    });
+  });
+  return cleanupDanglingBlogLeadIn(rewritten.join('\n'));
+}
+
+function lineMentionsPeak(line: string, name: string): boolean {
+  const haystack = normalizePeakName(line);
+  const needle = normalizePeakName(name);
+  if (!needle || !haystack) {
+    return false;
+  }
+  let from = 0;
+  while (from < haystack.length) {
+    const at = haystack.indexOf(needle, from);
+    if (at < 0) {
+      return false;
+    }
+    const before = at === 0 ? '' : haystack.charAt(at - 1);
+    const after = haystack.charAt(at + needle.length);
+    const boundaryBefore = before === '' || !/[\p{L}\p{N}]/u.test(before);
+    const boundaryAfter = after === '' || !/[\p{L}\p{N}]/u.test(after);
+    if (boundaryBefore && boundaryAfter) {
+      return true;
+    }
+    from = at + needle.length;
+  }
+  return false;
 }
 
 export function buildUrlTitleMap(sources: GuideSource[]): Map<string, string> {
@@ -267,6 +343,30 @@ function splitGuideBlocks(text: string): string[][] {
   return blocks;
 }
 
+const BLOG_LINK_LEAD_IN = /^(?:url|link|adres(?:\s+bloga)?)\s*[:\-–—]\s*/i;
+
+/** Linia z samym adresem wpisu dostaje ludzki wstęp „Link do bloga:”. */
+export function presentBlogLinkLine(line: string): string {
+  if (/link\s+do\s+bloga/i.test(line)) {
+    return line;
+  }
+  const stripped = line.replace(BLOG_LINK_LEAD_IN, '').trim();
+  const asUrl = stripped.replace(/\[([^\]]+)\]\((https:\/\/trailon\.pl\/[^)]+)\)/gi, '$2').trim();
+  const match = /https:\/\/trailon\.pl\/[^\s<>"')\]]+/i.exec(asUrl);
+  if (!match) {
+    return line;
+  }
+  const { href } = trimUrlTrailingPunctuation(match[0]);
+  if (!isTrailonBlogUrl(href)) {
+    return line;
+  }
+  const withoutUrl = asUrl.replace(match[0], '').trim();
+  if (withoutUrl.length > 0) {
+    return line;
+  }
+  return `Link do bloga: ${href}`;
+}
+
 export function plainTextToGuideHtml(
   text: string,
   urlTitles: Map<string, string>,
@@ -279,7 +379,7 @@ export function plainTextToGuideHtml(
   return splitGuideBlocks(trimmed)
     .map((lines, index) => {
       const inner = lines
-        .map((line) => formatInlineParagraphToHtml(line, urlTitles, resolveTitle))
+        .map((line) => formatInlineParagraphToHtml(presentBlogLinkLine(line), urlTitles, resolveTitle))
         .join('<br/>');
       const gapBefore = index > 0 && isNumberedItemStart(lines[0] ?? '');
       const style = gapBefore ? ` style="margin-top:${NUMBERED_ITEM_GAP}"` : '';

@@ -8,10 +8,23 @@ import { GuideToolResult } from './guide.types';
 
 type ToolArgs = Record<string, unknown>;
 
+/** Dopytanie o pogodę obejmuje tylko szczyty w tym promieniu od punktu użytkownika. */
+export const WEATHER_NEARBY_RADIUS_KM = 5;
+const EARTH_RADIUS_KM = 6371;
+const NEARBY_PEAK_LIMIT = 8;
+
+export interface WeatherUserPoint {
+  lat: number;
+  lng: number;
+}
+
+type NearbyPeak = PeakRow & { distance_km: number };
+
 export async function runGetPeakWeather(
   args: ToolArgs,
   d1: D1Service,
   weather: OpenMeteoService,
+  location?: WeatherUserPoint,
 ): Promise<GuideToolResult> {
   const scope = readWeatherScope(args.scope) ?? 'current';
   const peakId = readString(args.peak_id);
@@ -25,31 +38,38 @@ export async function runGetPeakWeather(
   if (peakId) {
     const peak = await findPeakById(d1, peakId);
     if (!peak) {
-      return { text: `Nie znaleziono opublikowanego szczytu o id ${peakId}.`, sourceKeys: [] };
+      return unansweredWeather(
+        d1,
+        location,
+        `Nie znaleziono opublikowanego szczytu o id ${peakId}.`,
+      );
     }
     const coords = peakCoordinates(peak);
     if (!coords) {
-      return {
-        text: `Szczyt ${peak.name} nie ma współrzędnych w katalogu — nie da się pobrać pogody Open-Meteo.`,
-        sourceKeys: [],
-      };
+      return unansweredWeather(
+        d1,
+        location,
+        `Szczyt ${peak.name} nie ma współrzędnych w katalogu — nie da się pobrać pogody Open-Meteo.`,
+      );
     }
     latLng = coords;
     peakLabel = formatPeakLabel(peak);
   } else if (peakName) {
     const matches = await findPeaksByName(d1, peakName, 5);
     if (matches.length === 0) {
-      return {
-        text: `Brak opublikowanego szczytu pasującego do nazwy „${peakName}".`,
-        sourceKeys: [],
-      };
+      return unansweredWeather(
+        d1,
+        location,
+        `Brak opublikowanego szczytu pasującego do nazwy „${peakName}".`,
+      );
     }
     const withCoords = matches.filter((row) => peakCoordinates(row) !== undefined);
     if (withCoords.length === 0) {
-      return {
-        text: `Znaleziono „${peakName}", ale brak współrzędnych w katalogu D1.`,
-        sourceKeys: [],
-      };
+      return unansweredWeather(
+        d1,
+        location,
+        `Znaleziono „${peakName}", ale brak współrzędnych w katalogu D1.`,
+      );
     }
     const chosen = withCoords[0]!;
     if (withCoords.length > 1) {
@@ -64,17 +84,16 @@ export async function runGetPeakWeather(
     latLng = peakCoordinates(chosen)!;
   } else if (lat !== undefined && lng !== undefined) {
     if (!isValidLatLng(lat, lng)) {
-      return { text: 'Nieprawidłowe współrzędne lat/lng.', sourceKeys: [] };
+      return unansweredWeather(d1, location, 'Nieprawidłowe współrzędne lat/lng.');
     }
     latLng = { lat, lng };
     peakLabel = `Współrzędne ${lat.toFixed(4)}, ${lng.toFixed(4)}`;
   } else {
-    return {
-      text:
-        'Podaj peak_id, peak_name albo parę lat + lng (współrzędne szczytu z katalogu). ' +
-        'Opcjonalnie scope: "current" (teraz) lub "weekend" (prognoza na najbliższą sobotę lub niedzielę — jak w TrailOn).',
-      sourceKeys: [],
-    };
+    return unansweredWeather(
+      d1,
+      location,
+      'Brak szczytu, do którego da się odnieść pogodę (nie podano peak_id, peak_name ani współrzędnych szczytu).',
+    );
   }
 
   try {
@@ -111,6 +130,78 @@ function formatWeatherText(peakLabel: string, snapshot: PeakWeatherSnapshot, sco
     'Źródło: Open-Meteo (api.open-meteo.com) — ten sam model co karta pogody na szczycie w TrailOn.',
   ];
   return lines.join('\n');
+}
+
+export function formatUnansweredWeather(reason: string, nearby: NearbyPeak[] | undefined): string {
+  const head = `${reason} Nie zgaduj prognozy.`;
+  if (!nearby) {
+    return (
+      `${head} Brak punktu użytkownika, więc nie wskażę szczytów w okolicy. ` +
+      'Poproś o włączenie lokalizacji w TrailOn albo o nazwę szczytu.'
+    );
+  }
+  if (nearby.length === 0) {
+    return (
+      `${head} W promieniu ${WEATHER_NEARBY_RADIUS_KM} km od punktu nie ma szczytu ze współrzędnymi, ` +
+      'do którego da się odnieść pogodę. Powiedz to wprost i poproś o nazwę szczytu. Nie poszerzaj promienia.'
+    );
+  }
+  const lines = nearby.map((peak) => {
+    const distance = Number.isFinite(peak.distance_km) ? `${peak.distance_km.toFixed(1)} km` : 'w promieniu 5 km';
+    return `- ${peak.name} (${peak.elevation_m} m, ${peak.range_name}, ${distance}, id=${peak.peak_id})`;
+  });
+  return (
+    `${head} Dopytaj użytkownika, o który z tych szczytów chodzi. ` +
+    `To jedyne szczyty w promieniu maksymalnie ${WEATHER_NEARBY_RADIUS_KM} km od jego punktu, do których możesz odnieść pogodę. ` +
+    'Nie wymieniaj dalszych i nie podawaj prognozy, dopóki nie wskaże jednego z nich:\n' +
+    lines.join('\n')
+  );
+}
+
+async function unansweredWeather(
+  d1: D1Service,
+  location: WeatherUserPoint | undefined,
+  reason: string,
+): Promise<GuideToolResult> {
+  const nearby = await nearbyPeaksForWeather(d1, location);
+  return { text: formatUnansweredWeather(reason, nearby), sourceKeys: [] };
+}
+
+async function nearbyPeaksForWeather(
+  d1: D1Service,
+  location: WeatherUserPoint | undefined,
+): Promise<NearbyPeak[] | undefined> {
+  if (!location || !isValidLatLng(location.lat, location.lng)) {
+    return undefined;
+  }
+  const table = d1.assertTableName(d1.peaksTable);
+  const haversineKm = `(${EARTH_RADIUS_KM} * acos(min(1.0, max(-1.0,
+    cos(radians(?)) * cos(radians(lat)) * cos(radians(lng) - radians(?)) + sin(radians(?)) * sin(radians(lat))
+  ))))`;
+  const sql = `SELECT peak_id, name, elevation_m, range_name, lat, lng, tags_json, description, status, recommended, distance_km
+    FROM (
+      SELECT peak_id, name, elevation_m, range_name, lat, lng, tags_json, description, status, recommended,
+        ${haversineKm} AS distance_km
+      FROM ${table}
+      WHERE status = 'published' AND lat IS NOT NULL AND lng IS NOT NULL
+    )
+    WHERE distance_km <= ?
+    ORDER BY distance_km ASC, elevation_m DESC
+    LIMIT ?`;
+  const rows = await d1.query<NearbyPeak>(sql, [
+    location.lat,
+    location.lng,
+    location.lat,
+    WEATHER_NEARBY_RADIUS_KM,
+    NEARBY_PEAK_LIMIT,
+  ]);
+  return rows.filter((peak) => {
+    const distance = typeof peak.distance_km === 'number' ? peak.distance_km : Number(peak.distance_km);
+    return peakCoordinates(peak) !== undefined && Number.isFinite(distance) && distance <= WEATHER_NEARBY_RADIUS_KM;
+  }).map((peak) => ({
+    ...peak,
+    distance_km: typeof peak.distance_km === 'number' ? peak.distance_km : Number(peak.distance_km),
+  }));
 }
 
 function formatPeakLabel(peak: PeakRow): string {

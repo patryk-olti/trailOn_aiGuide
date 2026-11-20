@@ -3,8 +3,11 @@ import test from 'node:test';
 import {
   collectCitedBlogUrls,
   plainTextToGuideHtml,
+  presentBlogLinkLine,
+  stripMismatchedPeakBlogUrls,
   suppressRepeatedBlogLinks,
 } from '../../dist/guide/guide-response-html.js';
+import { blogIdentityMatchesPeak } from '../../dist/rag/rag-blog-lookup.js';
 
 const SNIEZKA = 'https://trailon.pl/przewodnik/karkonosze/sniezka';
 const SZRENICA = 'https://trailon.pl/przewodnik/karkonosze/szrenica';
@@ -65,6 +68,53 @@ test('między ostatnim podpunktem a kolejnym numerem jest większy odstęp', () 
   assert.equal(html.startsWith('<p>1. Trzy Korony'), true);
   assert.equal(html.includes('polski?<br/>2. Kłodzka'), false);
   assert.equal(html.includes('stronę.<br/>Link do bloga: Trzy Korony'), true);
+});
+
+test('slug innego szczytu nie jest adresem Kalenicy', () => {
+  const foreign = 'https://trailon.pl/przewodnik/gory-bardzkie/klodzka-gora';
+  const own = 'https://trailon.pl/przewodnik/gory-sowie/kalenica';
+  assert.equal(blogIdentityMatchesPeak('Kalenica', { url: foreign }), false);
+  assert.equal(blogIdentityMatchesPeak('Kalenica', { url: own }), true);
+  assert.equal(blogIdentityMatchesPeak('Wielka Sowa', { url: 'https://trailon.pl/przewodnik/gory-sowie/wielka-sowa' }), true);
+  assert.equal(blogIdentityMatchesPeak('Wielka Sowa', { url: 'https://trailon.pl/przewodnik/gory-sowie/mala-sowa' }), false);
+});
+
+test('przy szczycie zostaje tylko jego potwierdzony URL', () => {
+  const wielka = 'https://trailon.pl/przewodnik/gory-sowie/wielka-sowa';
+  const klodzka = 'https://trailon.pl/przewodnik/gory-bardzkie/klodzka-gora';
+  const text = [
+    'Wielka Sowa (1015 m n.p.m.)',
+    `URL: ${wielka}`,
+    'Kalenica (964 m n.p.m.)',
+    `URL: ${klodzka}`,
+    'Mała Sowa (972 m n.p.m.)',
+    'Brak wpisu blogowego.',
+  ].join('\n');
+  const next = stripMismatchedPeakBlogUrls(text, [
+    { name: 'Wielka Sowa', url: wielka },
+    { name: 'Kalenica' },
+    { name: 'Mała Sowa' },
+  ]);
+  assert.equal(next.includes(wielka), true);
+  assert.equal(next.includes(klodzka), false);
+  assert.match(next, /Kalenica \(964 m n\.p\.m\.\)/);
+  assert.equal(next.includes('URL:'), true);
+  assert.equal(next.split('URL:').length - 1, 1);
+});
+
+test('adres wpisu jest opisany jako link do bloga', () => {
+  assert.equal(presentBlogLinkLine(`URL: ${SNIEZKA}`), `Link do bloga: ${SNIEZKA}`);
+  assert.equal(presentBlogLinkLine(SNIEZKA), `Link do bloga: ${SNIEZKA}`);
+  assert.equal(presentBlogLinkLine(`Link do bloga: ${SNIEZKA}`), `Link do bloga: ${SNIEZKA}`);
+  assert.equal(presentBlogLinkLine(TRASA), TRASA);
+
+  const html = plainTextToGuideHtml(
+    ['Wielka Sowa (1015 m n.p.m.)', `URL: ${SNIEZKA}`].join('\n'),
+    new Map([[SNIEZKA, 'Śnieżka']]),
+  );
+  assert.match(html, /Link do bloga: <a href="https:\/\/trailon\.pl\/przewodnik\/karkonosze\/sniezka"/);
+  assert.match(html, />Śnieżka<\/a>/);
+  assert.equal(html.includes('URL:'), false);
 });
 
 test('link do trasy nie jest traktowany jak blog', () => {
