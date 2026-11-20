@@ -78,6 +78,7 @@ export class GuideService {
   }
 
   async reply(dto: CreateGuideDto): Promise<GuideReply> {
+    const questionAt = new Date().toISOString();
     const conversationId = await this.conversationHistory.resolveConversation(
       dto.participantId,
       dto.conversationId,
@@ -252,7 +253,12 @@ export class GuideService {
       alreadyCitedBlogs,
     );
 
-    await this.conversationHistory.appendExchange(conversationId, dto.message, finalText);
+    await this.conversationHistory.appendExchange(
+      conversationId,
+      dto.message,
+      finalText,
+      questionAt,
+    );
 
     return {
       conversationId,

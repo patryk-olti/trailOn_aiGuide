@@ -8,8 +8,44 @@ import type {
 /** Ile ostatnich konwersacji użytkownika zwraca odczyt historii. */
 export const PARTICIPANT_HISTORY_CONVERSATION_LIMIT = 5;
 
-/** Ile ostatnich wiadomości zwraca odczyt w ramach jednej konwersacji. */
-export const PARTICIPANT_HISTORY_MESSAGE_LIMIT = 5;
+/**
+ * Ile ostatnich wiadomości zwraca odczyt w ramach jednej konwersacji.
+ * Trzy wymiany to już 6 wiadomości, więc limit musi pomieścić cały krótki wątek.
+ */
+export const PARTICIPANT_HISTORY_MESSAGE_LIMIT = 40;
+
+/**
+ * Czas przyjścia pytania i czas zapisu odpowiedzi.
+ * `askedAt` zostaje takie, jakie przyszło z żądania. `answeredAt` jest późniejsze,
+ * także gdy odpowiedź zmieści się w tej samej milisekundzie.
+ */
+export function exchangeTimestamps(
+  questionAt: string,
+  now = new Date(),
+): { askedAt: string; answeredAt: string } {
+  const parsedQuestion = Date.parse(questionAt);
+  const askedMs = Number.isNaN(parsedQuestion) ? now.getTime() : parsedQuestion;
+  const askedAt = new Date(askedMs).toISOString();
+  const answeredAt = new Date(Math.max(now.getTime(), askedMs + 1)).toISOString();
+  return { askedAt, answeredAt };
+}
+
+/** Pytanie przed odpowiedzią, gdy znacznik czasu jest wspólny (starsze zapisy). */
+export function compareHistoryMessages(
+  left: { created_at: string; role: string },
+  right: { created_at: string; role: string },
+): number {
+  if (left.created_at < right.created_at) {
+    return -1;
+  }
+  if (left.created_at > right.created_at) {
+    return 1;
+  }
+  if (left.role === right.role) {
+    return 0;
+  }
+  return left.role === 'user' ? -1 : 1;
+}
 
 /** Obcina listę wiadomości do ostatnich N wymian (user+assistant). */
 export function trimTurnsToLimit<T extends Pick<StoredChatTurn, 'role' | 'content'>>(
@@ -25,7 +61,7 @@ export function trimTurnsToLimit<T extends Pick<StoredChatTurn, 'role' | 'conten
 
 /**
  * Składa historię użytkownika: najwyżej 5 konwersacji (w podanej kolejności)
- * i w każdej najwyżej 5 ostatnich wiadomości, chronologicznie.
+ * i w każdej ostatnie wiadomości, chronologicznie (pytanie przed odpowiedzią).
  */
 export function assembleParticipantHistory(
   participantId: string,
@@ -48,8 +84,8 @@ export function assembleParticipantHistory(
   return {
     participantId,
     conversations: selected.map((row) => {
-      const chronological = [...(grouped.get(row.conversation_id) ?? [])].sort((left, right) =>
-        left.created_at < right.created_at ? -1 : left.created_at > right.created_at ? 1 : 0,
+      const chronological = [...(grouped.get(row.conversation_id) ?? [])].sort(
+        compareHistoryMessages,
       );
       const recent = chronological.slice(-PARTICIPANT_HISTORY_MESSAGE_LIMIT);
       return {

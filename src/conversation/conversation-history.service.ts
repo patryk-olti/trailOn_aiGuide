@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { D1Service } from '../cloudflare/d1.service';
 import {
   assembleParticipantHistory,
+  exchangeTimestamps,
   PARTICIPANT_HISTORY_CONVERSATION_LIMIT,
   PARTICIPANT_HISTORY_MESSAGE_LIMIT,
   trimTurnsToLimit,
@@ -72,7 +73,7 @@ export class ConversationHistoryService {
   }
 
   /**
-   * Ostatnie konwersacje uczestnika (max 5) wraz z ostatnimi wiadomościami każdej z nich (max 5).
+   * Ostatnie konwersacje uczestnika (max 5) wraz z ostatnimi wiadomościami każdej z nich.
    */
   async getHistoryForParticipant(participantId: string): Promise<ParticipantHistory> {
     const trimmedParticipant = participantId.trim();
@@ -92,7 +93,10 @@ export class ConversationHistoryService {
     const messages = await this.d1.query<GuideMessageRow>(
       `SELECT message_id, conversation_id, role, content, created_at FROM (
         SELECT message_id, conversation_id, role, content, created_at,
-               ROW_NUMBER() OVER (PARTITION BY conversation_id ORDER BY created_at DESC) AS rn
+               ROW_NUMBER() OVER (
+                 PARTITION BY conversation_id
+                 ORDER BY created_at DESC, CASE role WHEN 'assistant' THEN 0 ELSE 1 END
+               ) AS rn
         FROM ${this.messagesTable}
         WHERE conversation_id IN (${placeholders})
       ) ranked
@@ -106,7 +110,7 @@ export class ConversationHistoryService {
   async getRecentTurns(conversationId: string): Promise<StoredChatTurn[]> {
     const fetchLimit = Math.max(1, this.historyTurnLimit) * 2;
     const rows = await this.d1.query<GuideMessageRow>(
-      `SELECT role, content FROM ${this.messagesTable} WHERE conversation_id = ? ORDER BY created_at DESC LIMIT ?`,
+      `SELECT role, content FROM ${this.messagesTable} WHERE conversation_id = ? ORDER BY created_at DESC, CASE role WHEN 'assistant' THEN 0 ELSE 1 END LIMIT ?`,
       [conversationId, fetchLimit],
     );
     const chronologic = [...rows].reverse();
@@ -123,22 +127,23 @@ export class ConversationHistoryService {
     conversationId: string,
     question: string,
     answer: string,
+    questionAt: string,
   ): Promise<void> {
-    const now = new Date().toISOString();
+    const { askedAt, answeredAt } = exchangeTimestamps(questionAt);
     const userMessageId = randomUUID();
     const assistantMessageId = randomUUID();
 
     await this.d1.query(
       `INSERT INTO ${this.messagesTable} (message_id, conversation_id, role, content, created_at) VALUES (?, ?, 'user', ?, ?)`,
-      [userMessageId, conversationId, question, now],
+      [userMessageId, conversationId, question, askedAt],
     );
     await this.d1.query(
       `INSERT INTO ${this.messagesTable} (message_id, conversation_id, role, content, created_at) VALUES (?, ?, 'assistant', ?, ?)`,
-      [assistantMessageId, conversationId, answer, now],
+      [assistantMessageId, conversationId, answer, answeredAt],
     );
     await this.d1.query(
       `UPDATE ${this.conversationsTable} SET updated_at = ? WHERE conversation_id = ?`,
-      [now, conversationId],
+      [answeredAt, conversationId],
     );
   }
 
