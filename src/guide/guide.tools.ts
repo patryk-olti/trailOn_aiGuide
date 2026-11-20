@@ -4,6 +4,7 @@ import { OpenAiService } from '../openai/openai.service';
 import { PeakRow } from '../cloudflare/d1.types';
 import { BlogPostRef, blogIdentityMatchesPeak } from '../rag/rag-blog-lookup';
 import { RagIndexService } from '../rag/rag-index.service';
+import { RagSearchHit } from '../rag/rag.types';
 import { RAG_MAX_TOOL_TEXT_CHARS } from '../rag/rag.constants';
 import { RagContentSource, RAG_SOURCE_LOCATIONS } from '../rag/rag.constants';
 import { OpenMeteoService } from '../weather/open-meteo.service';
@@ -23,7 +24,7 @@ export const GUIDE_TOOLS: ChatCompletionTool[] = [
     function: {
       name: 'search_materials',
       description:
-        'Szuka fragmentów w materiałach trailON (blog R2, biblioteka tras, szlaki długodystansowe). Obowiązkowe przy pytaniach o szczyty lub pasma przed udzieleniem odpowiedzi.',
+        'Krok 1. Zawsze pierwsze źródło: blogi trailON. Bez parametru source zwraca najpierw blogi, a potem szlaki. Jeśli blog pokrywa pytanie, odpowiedz z niego i nie sięgaj do szczytów, szlaków ani internetu.',
       parameters: {
         type: 'object',
         properties: {
@@ -60,7 +61,7 @@ export const GUIDE_TOOLS: ChatCompletionTool[] = [
     function: {
       name: 'search_peaks',
       description:
-        'Wyszukuje opublikowane szczyty w katalogu trailON (Cloudflare D1 / trailon_peaks_blob): nazwa, pasmo, wysokość, opis, link do blogu. Używaj range np. „Karkonosze” przy pytaniach o pasmo. Domyślnie zwracaj maks. 3 szczyty (limit), chyba że użytkownik prosi o więcej.',
+        'Krok 2, po blogu. Katalog szczytów trailON (Cloudflare D1): nazwa, pasmo, wysokość, opis, link do bloga. Używaj, gdy blog nie podaje wysokości, pasma albo listy. range np. „Karkonosze”. Domyślnie maks. 3 szczyty, chyba że użytkownik prosi o więcej. Nie zastępuj treści bloga katalogiem.',
       parameters: {
         type: 'object',
         properties: {
@@ -108,7 +109,7 @@ export const GUIDE_TOOLS: ChatCompletionTool[] = [
     function: {
       name: 'search_library_routes',
       description:
-        'Szuka gotowych planów w bibliotece tras trailON (R2 / biblioteka-tras). Obowiązkowe, gdy użytkownik pyta o trasę, szlak, dojście lub wycieczkę na szczyt albo w pasmo. Zwraca propozycje z nazwą, trudnością, długością i dokładnym url. Nie wymyślaj tras spoza tego wyniku.',
+        'Krok 3, po blogu i szczytach. Gotowe plany w bibliotece tras trailON. Wołaj, gdy pytanie jest o trasę, szlak, dojście albo wycieczkę, a blog i katalog szczytów nie dają planu. Zwraca nazwę, trudność, długość i dokładny url. Nie wymyślaj tras spoza wyniku.',
       parameters: {
         type: 'object',
         properties: {
@@ -128,7 +129,7 @@ export const GUIDE_TOOLS: ChatCompletionTool[] = [
     function: {
       name: 'search_web',
       description:
-        'Szuka w internecie aktualnych faktów górskich, których nie ma w materiałach trailON: komunikaty turystyczne, zamknięcia szlaków, lawiny, przepisy parków, ostrzeżenia TOPR, GOPR, IMGW i parków narodowych. Wynik pochodzi tylko ze źródeł branżowych. Nie używaj do list szczytów, wysokości, tras z biblioteki ani do pytań spoza gór.',
+        'Krok 4, na końcu. Internet dopiero gdy blog, szczyty i szlaki trailON nie zawierają faktu. Treść strony ma wystarczyć na start — nie zastępuj jej siecią. Do zamknięcia szlaku, lawiny, komunikatu parku albo służb, których nie ma w materiałach trailON. Wynik tylko ze źródeł branżowych. Nie używaj do list szczytów, wysokości, opisów z bloga ani tras z biblioteki.',
       parameters: {
         type: 'object',
         properties: {
@@ -249,22 +250,49 @@ export class GuideToolsExecutor {
     }
     const limit = clampInt(args.limit, 3, 1, 6);
     const source = readSource(args.source);
-    const hits = await this.rag.searchByQuery(query, {
-      source,
-      sources: source ? undefined : ['blog', 'biblioteka-tras', 'szlaki-dlugodystansowe'],
+    if (source && source !== 'blog') {
+      const hits = await this.rag.searchByQuery(query, { source, limit });
+      if (hits.length === 0) {
+        return { text: 'Brak trafień w szlakach trailON.', sourceKeys: [], embeddingCalls: 1 };
+      }
+      return { ...this.packMaterialHits(hits), embeddingCalls: 1 };
+    }
+    if (source === 'blog') {
+      const hits = await this.rag.searchByQuery(query, { source: 'blog', limit });
+      if (hits.length === 0) {
+        return { text: 'Brak trafień w blogach trailON.', sourceKeys: [], embeddingCalls: 1 };
+      }
+      return { ...this.packMaterialHits(hits), embeddingCalls: 1 };
+    }
+
+    const blogs = await this.rag.searchByQuery(query, { source: 'blog', limit });
+    const trails = await this.rag.searchByQuery(query, {
+      sources: ['biblioteka-tras', 'szlaki-dlugodystansowe'],
       limit,
     });
-    if (hits.length === 0) {
-      return { text: 'Brak trafień w materiałach trailON.', sourceKeys: [] };
-    }
-    const lines = hits.map((hit) => {
-      const snippet = truncate(hit.text, 500);
-      const section = hit.section ? ` | ${hit.section}` : '';
-      const url = hit.url ? ` | ${hit.url}` : '';
-      return `id=${hit.id} | ${hit.title}${section}${url}\n${snippet}`;
-    });
+    const blogBody = blogs.length > 0 ? this.materialLines(blogs, 420) : 'Brak trafień w blogach.';
+    const trailBody =
+      trails.length > 0 ? this.materialLines(trails, 220) : 'Brak trafień w szlakach.';
+    const hits = [...blogs, ...trails];
     return {
-      text: truncate(lines.join('\n\n'), RAG_MAX_TOOL_TEXT_CHARS),
+      text: truncate(
+        `Blogi (pierwsze źródło — jeśli to wystarcza, nie sięgaj dalej):\n${blogBody}\n\nSzlaki (dopiero po blogu i po katalogu szczytów):\n${trailBody}`,
+        RAG_MAX_TOOL_TEXT_CHARS,
+      ),
+      sourceKeys: hits.map((hit) => hit.id),
+      sources: hits.map((hit) => ({
+        id: hit.id,
+        title: hit.title,
+        source: RAG_SOURCE_LOCATIONS[hit.source],
+        url: hit.url,
+      })),
+      embeddingCalls: 2,
+    };
+  }
+
+  private packMaterialHits(hits: RagSearchHit[]): GuideToolResult {
+    return {
+      text: truncate(this.materialLines(hits, 500), RAG_MAX_TOOL_TEXT_CHARS),
       sourceKeys: hits.map((hit) => hit.id),
       sources: hits.map((hit) => ({
         id: hit.id,
@@ -273,6 +301,20 @@ export class GuideToolsExecutor {
         url: hit.url,
       })),
     };
+  }
+
+  private materialLines(
+    hits: Array<{ id: string; title: string; section?: string; url?: string; text: string }>,
+    snippetChars: number,
+  ): string {
+    return hits
+      .map((hit) => {
+        const snippet = truncate(hit.text, snippetChars);
+        const section = hit.section ? ` | ${hit.section}` : '';
+        const url = hit.url ? ` | ${hit.url}` : '';
+        return `id=${hit.id} | ${hit.title}${section}${url}\n${snippet}`;
+      })
+      .join('\n\n');
   }
 
   private getMaterial(args: ToolArgs): GuideToolResult {

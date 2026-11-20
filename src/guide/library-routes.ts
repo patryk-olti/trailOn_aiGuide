@@ -15,6 +15,8 @@ export interface LibraryRoute {
 const ROUTE_INTENT =
   /(tras[aąęy]|szlak|dojś|dojsc|wycieczk|jak\s+(?:doj|wej|iść|isc)|wejść|wejsc)/i;
 
+const TRIP_INTENT = /(wyjech|wypraw|jad[eę]|pojech|wybieram|ruszy)/i;
+
 const QUERY_STOPWORDS = new Set([
   'trasa',
   'trasy',
@@ -56,6 +58,10 @@ const QUERY_STOPWORDS = new Set([
 
 export function messageAsksForRoute(message: string): boolean {
   return ROUTE_INTENT.test(message);
+}
+
+export function messagePlansTrip(message: string): boolean {
+  return TRIP_INTENT.test(message);
 }
 
 export function routeQueryTokens(query: string): string[] {

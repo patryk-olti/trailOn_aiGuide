@@ -29,6 +29,9 @@ export function extractMountainRange(message: string): string | undefined {
 }
 
 export function messageConcernsPeaks(message: string): boolean {
+  if (extractMountainRange(message)) {
+    return true;
+  }
   return /(szczyt|szczyty|najwyższ|pasmo\s+gór|góry\b|górsk)/i.test(message);
 }
 

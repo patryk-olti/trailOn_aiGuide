@@ -14,6 +14,7 @@
     "test:conversation": "nest build && node --test src/conversation/conversation-history.helpers.test.mjs",
     "test:guide-links": "nest build && node --test src/guide/guide-blog-links.test.mjs",
     "test:library-routes": "nest build && node --test src/guide/library-routes.test.mjs",
+    "test:catalog": "nest build && node --test src/guide/guide-catalog.prefetch.test.mjs",
     "test:web-search": "nest build && node --test src/guide/guide-web-search.test.mjs",
     "test:conversation:d1": "node scripts/conversation-d1-smoke.mjs"
   },
