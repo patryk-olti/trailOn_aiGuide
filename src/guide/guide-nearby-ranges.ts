@@ -1,3 +1,4 @@
+import https from 'node:https';
 import { D1Service } from '../cloudflare/d1.service';
 import { RAG_SOURCE_LOCATIONS } from '../rag/rag.constants';
 import {
@@ -11,7 +12,9 @@ import { GuideToolResult } from './guide.types';
 export const MAX_NEARBY_RANGES = 3;
 const EARTH_RADIUS_KM = 6371;
 const GEOCODE_URL = 'https://geocoding-api.open-meteo.com/v1/search';
-const GEOCODE_TIMEOUT_MS = 8_000;
+const PHOTON_URL = 'https://photon.komoot.io/api/';
+const GEOCODE_TIMEOUT_MS = 5_000;
+const GEOCODE_USER_AGENT = 'trailon-aiguide/0.1 (departure geocoder)';
 
 export interface RangePeakDistance {
   peak_id: string;
@@ -627,31 +630,24 @@ export async function runSuggestNearbyRanges(
 }
 
 export async function geocodeLocality(locality: string, signal?: AbortSignal): Promise<GeocodeHit[]> {
-  const collected: GeocodeHit[] = [];
-  const seen = new Set<string>();
-  let failure: unknown;
-  for (const query of localityQueries(locality)) {
-    try {
-      const hits = await fetchGeocodeHits(query, signal);
-      for (const hit of hits) {
-        const key = `${hit.country_code ?? ''}|${normalizePlaceLabel(hit.name)}|${hit.latitude.toFixed(4)}|${hit.longitude.toFixed(4)}`;
-        if (seen.has(key)) {
-          continue;
-        }
-        seen.add(key);
-        collected.push(hit);
-      }
-    } catch (error) {
-      if (error instanceof Error && /abort/i.test(error.name)) {
-        throw error;
-      }
-      failure = error;
-    }
+  const queries = localityQueries(locality);
+  const primary = await collectHits(queries, fetchOpenMeteoHits, signal);
+  if (hitsInPoland(primary.hits).length > 0) {
+    return primary.hits;
   }
-  if (collected.length === 0 && failure) {
+  if (primary.failure) {
+    const reason = primary.failure instanceof Error ? primary.failure.message : String(primary.failure);
+    console.error(`Geokoder Open-Meteo niedostępny (${reason}). Szukam miejscowości w Photon.`);
+  }
+  const secondary = await collectHits(queries, fetchPhotonHits, signal);
+  if (secondary.hits.length > 0) {
+    return secondary.hits;
+  }
+  const failure = primary.failure ?? secondary.failure;
+  if (failure) {
     throw failure;
   }
-  return collected;
+  return [];
 }
 
 export async function runSearchLocality(args: ToolArgs, signal?: AbortSignal): Promise<GuideToolResult> {
@@ -743,28 +739,213 @@ export function localityQueries(locality: string): string[] {
   return queries;
 }
 
-async function fetchGeocodeHits(name: string, signal?: AbortSignal): Promise<GeocodeHit[]> {
+async function collectHits(
+  queries: string[],
+  fetchHits: (name: string, signal?: AbortSignal) => Promise<GeocodeHit[]>,
+  signal?: AbortSignal,
+): Promise<{ hits: GeocodeHit[]; failure?: unknown }> {
+  const collected: GeocodeHit[] = [];
+  const seen = new Set<string>();
+  let failure: unknown;
+  for (const query of queries) {
+    try {
+      const hits = await fetchHits(query, signal);
+      for (const hit of hits) {
+        const key = `${hit.country_code ?? ''}|${normalizePlaceLabel(hit.name)}|${hit.latitude.toFixed(4)}|${hit.longitude.toFixed(4)}`;
+        if (seen.has(key)) {
+          continue;
+        }
+        seen.add(key);
+        collected.push(hit);
+      }
+    } catch (error) {
+      if (isClientAbort(error)) {
+        throw error;
+      }
+      failure = error;
+    }
+  }
+  return failure ? { hits: collected, failure } : { hits: collected };
+}
+
+function hitsInPoland(hits: GeocodeHit[]): GeocodeHit[] {
+  return hits.filter((hit) => hit.country_code === 'PL');
+}
+
+async function fetchOpenMeteoHits(name: string, signal?: AbortSignal): Promise<GeocodeHit[]> {
   const query = new URLSearchParams({
     name,
     count: '20',
     language: 'pl',
     format: 'json',
   });
-  const timeout = AbortSignal.timeout(GEOCODE_TIMEOUT_MS);
-  const response = await fetch(`${GEOCODE_URL}?${query}`, {
-    signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
-  });
-  if (!response.ok) {
-    throw new Error(`Geokoder odpowiedział ${response.status}`);
-  }
-  const payload = (await response.json()) as { results?: unknown };
-  if (!Array.isArray(payload.results)) {
+  const payload = (await requestJson(new URL(`${GEOCODE_URL}?${query}`), signal)) as { results?: unknown };
+  if (!payload || typeof payload !== 'object' || !Array.isArray(payload.results)) {
     return [];
   }
   return payload.results.flatMap((row) => {
     const hit = readGeocodeHit(row);
     return hit ? [hit] : [];
   });
+}
+
+const PHOTON_PLACE_TYPES = new Set([
+  'city',
+  'town',
+  'village',
+  'hamlet',
+  'locality',
+  'suburb',
+  'municipality',
+  'isolated_dwelling',
+]);
+
+async function fetchPhotonHits(name: string, signal?: AbortSignal): Promise<GeocodeHit[]> {
+  const query = new URLSearchParams({
+    q: name,
+    limit: '15',
+  });
+  const payload = await requestJson(new URL(`${PHOTON_URL}?${query}`), signal);
+  return hitsFromPhotonPayload(payload);
+}
+
+/** Photon nie podaje liczby mieszkańców. Pierwsze miasto o tej nazwie jest tym ważniejszym. */
+export function hitsFromPhotonPayload(payload: unknown): GeocodeHit[] {
+  if (!payload || typeof payload !== 'object' || !Array.isArray((payload as { features?: unknown }).features)) {
+    return [];
+  }
+  const features = (payload as { features: unknown[] }).features;
+  const rankByName = new Map<string, number>();
+  const hits: GeocodeHit[] = [];
+  for (const feature of features) {
+    const hit = readPhotonFeature(feature, rankByName);
+    if (hit) {
+      hits.push(hit);
+    }
+  }
+  return hits;
+}
+
+function readPhotonFeature(value: unknown, rankByName: Map<string, number>): GeocodeHit | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+  const feature = value as {
+    geometry?: { coordinates?: unknown };
+    properties?: Record<string, unknown>;
+  };
+  const props = feature.properties;
+  const coordinates = feature.geometry?.coordinates;
+  if (!props || !Array.isArray(coordinates) || coordinates.length < 2) {
+    return undefined;
+  }
+  const placeType = readString(props.osm_value) ?? readString(props.type);
+  if (!placeType || !PHOTON_PLACE_TYPES.has(placeType)) {
+    return undefined;
+  }
+  const country = (readString(props.countrycode) ?? '').toUpperCase();
+  if (country && country !== 'PL') {
+    return undefined;
+  }
+  const name = readString(props.name);
+  const longitude = readFloat(coordinates[0]);
+  const latitude = readFloat(coordinates[1]);
+  if (!name || latitude === undefined || longitude === undefined) {
+    return undefined;
+  }
+  const key = normalizePlaceLabel(name);
+  const rank = rankByName.get(key) ?? 0;
+  rankByName.set(key, rank + 1);
+  const population = rank === 0 && (placeType === 'city' || placeType === 'town') ? 50_000 : 200;
+  return {
+    name,
+    latitude,
+    longitude,
+    country_code: country || 'PL',
+    admin1: readString(props.state),
+    admin2: readString(props.county),
+    population,
+  };
+}
+
+function requestJson(url: URL, signal?: AbortSignal): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError());
+      return;
+    }
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const req = https.request(
+      {
+        protocol: url.protocol,
+        hostname: url.hostname,
+        path: `${url.pathname}${url.search}`,
+        method: 'GET',
+        family: 4,
+        servername: url.hostname,
+        headers: {
+          Accept: 'application/json',
+          'User-Agent': GEOCODE_USER_AGENT,
+        },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => {
+          chunks.push(chunk);
+        });
+        res.on('end', () => {
+          const status = res.statusCode ?? 0;
+          const body = Buffer.concat(chunks).toString('utf8');
+          if (status < 200 || status >= 300) {
+            finish(new Error(`Geokoder odpowiedział ${status}`));
+            return;
+          }
+          try {
+            finish(undefined, JSON.parse(body) as unknown);
+          } catch (error) {
+            finish(error instanceof Error ? error : new Error('Geokoder zwrócił nie-JSON'));
+          }
+        });
+      },
+    );
+    const onAbort = (): void => {
+      req.destroy(abortError());
+    };
+    const finish = (error?: unknown, payload?: unknown): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      if (timer) {
+        clearTimeout(timer);
+      }
+      signal?.removeEventListener('abort', onAbort);
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(payload);
+    };
+    timer = setTimeout(() => {
+      req.destroy(new Error('Geokoder nie odpowiedział w czasie'));
+    }, GEOCODE_TIMEOUT_MS);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    req.on('error', (error) => {
+      finish(error);
+    });
+    req.end();
+  });
+}
+
+function abortError(): Error {
+  const error = new Error('The operation was aborted');
+  error.name = 'AbortError';
+  return error;
+}
+
+function isClientAbort(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
 }
 
 async function answerFromPlace(

@@ -14,6 +14,7 @@ import {
   fillDepartureArgs,
   isNearbyRangesTemplate,
   latestStatedDeparture,
+  hitsFromPhotonPayload,
   localityQueries,
   mentionedVoivodeship,
   messageAllowsNearbyList,
@@ -326,6 +327,45 @@ test('Głogów woj. i „z Głogowa” trafiają w miasto, nie w wieś o podobne
     ),
     true,
   );
+});
+
+test('Photon wskazuje Głogów w dolnośląskim, gdy Open-Meteo nie odpowie', () => {
+  const hits = hitsFromPhotonPayload({
+    features: [
+      {
+        geometry: { coordinates: [16.0860805, 51.6634169] },
+        properties: {
+          name: 'Głogów',
+          state: 'województwo dolnośląskie',
+          countrycode: 'PL',
+          type: 'city',
+        },
+      },
+      {
+        geometry: { coordinates: [16.0798664, 51.6696063] },
+        properties: { name: 'Głogów', state: 'województwo dolnośląskie', countrycode: 'PL', type: 'house' },
+      },
+      {
+        geometry: { coordinates: [20.8529163, 51.4121369] },
+        properties: {
+          name: 'Głogów',
+          state: 'województwo mazowieckie',
+          countrycode: 'PL',
+          type: 'city',
+        },
+      },
+    ],
+  });
+  const bare = resolveDeparturePlace(hits, 'Głogów', undefined);
+  assert.equal(bare.kind, 'ready');
+  assert.equal(bare.locality, 'Głogów');
+  assert.equal(bare.voivodeship, 'dolnośląskie');
+  assert.equal(bare.lat, 51.6634169);
+
+  const stated = resolveDeparturePlace(hits, 'Głogów', 'dolnośląskie');
+  assert.equal(stated.kind, 'ready');
+  assert.equal(stated.voivodeship, 'dolnośląskie');
+  assert.equal(stated.lng, 16.0860805);
 });
 
 test('wcześniejsza prośba o miejscowość i województwo zostaje w historii', () => {
