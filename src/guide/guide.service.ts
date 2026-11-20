@@ -10,13 +10,23 @@ import { RagSearchHit } from '../rag/rag.types';
 import { RAG_SOURCE_LOCATIONS } from '../rag/rag.constants';
 import { CreateGuideDto } from './dto/create-guide.dto';
 import { GUIDE_TOOLS, GuideToolsExecutor } from './guide.tools';
-import { extractMountainRange, planCatalogPrefetch } from './guide-catalog.prefetch';
+import {
+  extractLooseRange,
+  extractMountainRange,
+  messageAsksWhatIsBeside,
+  placeAskedAbout,
+  planCatalogPrefetch,
+} from './guide-catalog.prefetch';
 import {
   assistantAskedForDeparture,
   foldPolish,
+  formatRangePickReply,
+  isNearbyRangesTemplate,
   latestStatedDeparture,
   mentionedVoivodeship,
+  messageAllowsNearbyList,
   messageGivesDeparturePlace,
+  messageTargetsSpecificPlace,
   messageWantsRangeSuggestion,
 } from './guide-nearby-ranges';
 import {
@@ -69,15 +79,22 @@ Poza górami:
 
 „${offTopicReply}”
 
-Otwarta propozycja wyjazdu, gdy nie pada nazwa pasma:
-- „Chcę pojechać w góry, co proponujesz?”, „gdzie jechać”, „co polecasz w górach” to temat górski.
-- Zanim wymienisz jakiekolwiek pasmo, oprzyj się na suggest_nearby_ranges albo na bloku „Propozycja wyjazdu”, jeśli jest już w kontekście.
-- Narzędzie bierze punkt startu z całego wątku: ostatnia miejscowość z województwem, którą użytkownik podał. GPS z bieżącego żądania (pole location) jest używany tylko wtedy, gdy w wątku nie ma takiej miejscowości. Nie wymyślaj współrzędnych.
-- Gdy w wątku nie ma ani miejscowości z województwem, ani GPS, nie proponuj Tatr, Beskidów ani niczego z pamięci. Przekaż prośbę: lokalizacja w TrailOn albo miejscowość i województwo.
-- Gdy punkt startu jest już w wątku, nie pytaj o niego drugi raz. Zostaje przy kolejnych pytaniach, dopóki użytkownik sam nie wskaże innego miejsca.
-- Gdy użytkownik poda samą miejscowość, dopytaj o województwo. Małe miejscowości powtarzają się w różnych województwach.
-- Wynik to maksymalnie 3 najbliższe pasma i odległość do szczytu w paśmie. Nie dopisuj kolejnych.
-- Gdy użytkownik w kolejnej wiadomości poda miejscowość i województwo, wywołaj suggest_nearby_ranges z locality i voivodeship, nawet jeśli ta wiadomość nie zawiera słowa „góry”. W każdej następnej wiadomości tego wątku licz od tego samego miejsca.
+Otwarta propozycja wyjazdu — tylko gdy użytkownik nie nazywa pasma ani szczytu:
+- „Chcę pojechać w góry, co proponujesz?”, „gdzie jechać”, „co polecasz w górach” bez nazwy pasma to prośba o najbliższe pasma.
+- Wtedy, zanim wymienisz jakiekolwiek pasmo, oprzyj się na suggest_nearby_ranges albo na bloku „Propozycja wyjazdu”, jeśli jest już w kontekście.
+- Narzędzie bierze punkt startu z całego wątku: ostatnia miejscowość, którą użytkownik podał jako start. GPS z bieżącego żądania (pole location) jest używany tylko wtedy, gdy w wątku nie ma takiej miejscowości. Nie wymyślaj współrzędnych.
+- Gdy w wątku nie ma ani miejscowości, ani GPS, nie proponuj Tatr, Beskidów ani niczego z pamięci. Przekaż prośbę: lokalizacja w TrailOn albo miejscowość i województwo.
+- Gdy punkt startu jest już w wątku, nie pytaj o niego drugi raz. Zostaje, dopóki użytkownik sam nie powie, że start jest gdzie indziej („jadę z…”, „licz od…”, sama miejscowość albo miejscowość z województwem).
+- Nazwa pasma albo szczytu nie jest nowym startem. „Co jest obok Gór Kaczawskich?”, „co polecasz w Górach Kaczawskich?” i „co jest przy Grodźcu?” zostają przy dotychczasowym starcie.
+- Gdy użytkownik poda samą miejscowość jako start, dopytaj o województwo tylko wtedy, gdy narzędzie powie, że ta nazwa leży w kilku. Nie pytaj, jeśli start jest już ustalony.
+- Lista najbliższych pasm to maksymalnie 3 pasma i odległość do szczytu. Nie dopisuj kolejnych i nie wklejaj jej drugi raz, gdy pytanie jest o coś innego.
+- suggest_nearby_ranges wołaj tylko przy otwartym „dokąd w góry” albo gdy użytkownik podaje punkt startu. Przy pytaniu o nazwane pasmo, szczyt albo okolicę nie wołaj tego narzędzia.
+
+Gdy użytkownik nazywa pasmo albo szczyt, odpowiedz na to pytanie:
+- „Chcę jechać w Góry Kaczawskie, co polecasz?” — charakter, szczyty i trasa w tym paśmie. Odległość od znanego startu wolno dodać jednym zdaniem.
+- „Co jest obok Gór Kaczawskich?” — pasma obok tego pasma, nie lista od miejscowości.
+- „Co jest przy Grodźcu?” — ten szczyt: pasmo, wysokość, co jest w okolicy. Nie geokoduj szczytu jako miasta.
+- Nie zaczynaj takiej odpowiedzi od „Liczę od …”. Nie powtarzaj poprzedniej listy pasm.
 
 Zasady źródeł (obowiązkowe — zawsze w tej kolejności, bez przeskakiwania):
 1. Blogi trailON. To pierwsze źródło. Opis, charakter miejsca i kontekst bierz z sekcji "1. Blogi" oraz z search_materials. Gdy blog pokrywa pytanie, na nim oprzyj odpowiedź i nie szukaj dalej.
@@ -252,6 +269,7 @@ export class GuideService {
       ...priorTurns.map((turn) => turn.content),
       dto.message,
     ]);
+    const priorAskedForDeparture = assistantAskedForDeparture(priorTurns.map((turn) => turn.content));
     const toolContext: GuideToolRequestContext = {
       ...(dto.location
         ? {
@@ -263,13 +281,17 @@ export class GuideService {
           }
         : {}),
       ...(standingDeparture ? { departure: standingDeparture } : {}),
+      userMessage: dto.message,
+      placeAnswerExpected: priorAskedForDeparture,
     };
     if (standingDeparture) {
       system +=
         `\n\nPunkt startu tej rozmowy: ${standingDeparture.locality} (woj. ${standingDeparture.voivodeship}). ` +
-        'Użytkownik już go podał w tym wątku. Nie pytaj drugi raz o miejscowość, województwo ani o włączenie lokalizacji. ' +
-        'Przy propozycji pasm, szczytach w pobliżu i pogodzie bez nazwy szczytu licz od tego miejsca, także gdy bieżące żądanie ma osobno GPS. ' +
-        'Inny punkt przyjmuj tylko wtedy, gdy bieżąca wiadomość sama wskaże inną miejscowość.';
+        'Użytkownik już go podał. Nie pytaj drugi raz o miejscowość, województwo ani o włączenie lokalizacji. ' +
+        'To miejsce, skąd jedzie. Przy otwartej liście najbliższych pasm licz od niego. ' +
+        'Przy pytaniu o konkretne pasmo albo szczyt odpowiedz o nim — nie powtarzaj listy trzech pasm i nie zaczynaj od „Liczę od”. ' +
+        'Jedno zdanie o dojeździe wolno dodać, gdy pomaga. ' +
+        'Inny punkt przyjmuj tylko wtedy, gdy bieżąca wiadomość sama mówi, że start jest gdzie indziej.';
     }
 
     if (catalogPlan) {
@@ -287,6 +309,7 @@ export class GuideService {
     this.rememberPrefetch(blogHits, sourceIds, resolvedSources);
 
     let peakText = '';
+    let rangePickPeaks: GuidePeakElevation[] | undefined;
     if (catalogPlan?.peaks && (catalogPlan.peaks.range || catalogPlan.peaks.query)) {
       this.throwIfAborted(signal);
       yield {
@@ -308,6 +331,9 @@ export class GuideService {
       usage.embeddingCalls += peakResult.embeddingCalls ?? 0;
       this.absorbToolResult(sourceIds, resolvedSources, knownPeaks, peakResult);
       peakText = peakResult.text;
+      if (peakResult.peaks?.length) {
+        rangePickPeaks = peakResult.peaks;
+      }
     }
 
     if (!peakText && messageAsksToShowOnMap(dto.message)) {
@@ -350,15 +376,53 @@ export class GuideService {
     this.rememberPrefetch(trailHits, sourceIds, resolvedSources);
     const prefetched = [...blogHits, ...trailHits];
 
-    const namedRange = extractMountainRange(dto.message);
+    const looseRange = extractLooseRange(dto.message);
+    const namedRange = extractMountainRange(dto.message) ?? looseRange?.phrase;
+    const specificTarget = messageTargetsSpecificPlace(dto.message);
+    const asksBeside = Boolean(namedRange) && messageAsksWhatIsBeside(dto.message);
+    const askedPeak = asksBeside ? undefined : placeAskedAbout(dto.message);
     const wantsSuggestion = messageWantsRangeSuggestion(dto.message);
     const departureVoivodeship = mentionedVoivodeship(dto.message);
-    const priorAskedForDeparture = assistantAskedForDeparture(priorTurns.map((turn) => turn.content));
     const continueDeparture =
+      !specificTarget &&
       departureVoivodeship !== undefined &&
       (messageGivesDeparturePlace(dto.message) || priorAskedForDeparture);
     let nearbyFallback: string | undefined;
+    let focusFallback: string | undefined;
+    let focusBlock = '';
     let suggestionBlock = '';
+    if (asksBeside && (looseRange?.like || namedRange)) {
+      this.throwIfAborted(signal);
+      yield {
+        event: 'status',
+        data: { phase: 'prefetch', message: 'Sprawdzam, co leży obok tego pasma…' },
+      };
+      const beside = await this.tools.lookupRangesBeside(
+        looseRange?.like ?? namedRange ?? '',
+        looseRange?.preferPrefix,
+        standingDeparture,
+      );
+      if (beside) {
+        this.absorbToolResult(sourceIds, resolvedSources, knownPeaks, beside);
+        focusBlock = beside.text;
+        focusFallback = beside.focusReply;
+      }
+    } else if (askedPeak) {
+      this.throwIfAborted(signal);
+      yield {
+        event: 'status',
+        data: { phase: 'prefetch', message: `Sprawdzam szczyt ${askedPeak}…` },
+      };
+      const focused = await this.tools.lookupPeakFocus(askedPeak, standingDeparture);
+      if (focused) {
+        this.absorbToolResult(sourceIds, resolvedSources, knownPeaks, focused);
+        peakText = focused.text;
+        focusFallback = focused.focusReply;
+      }
+    }
+    if (!focusFallback && namedRange && !asksBeside && rangePickPeaks && rangePickPeaks.length > 0) {
+      focusFallback = formatRangePickReply(namedRange, rangePickPeaks, standingDeparture);
+    }
     if (wantsSuggestion && !continueDeparture) {
       this.throwIfAborted(signal);
       const suggestionArgs: Record<string, unknown> = { limit: 3 };
@@ -429,10 +493,22 @@ export class GuideService {
         : '\n\nTa wiadomość prosi o pokazanie na mapie, a w katalogu nie ma pasującego szczytu. To nadal temat górski. Nie używaj gadki przewodnika. Napisz wprost, że nie pokażesz tego na mapie, bo nie ma tego na liście szczytów trailON.';
     }
 
-    if (namedRange) {
+    if (namedRange && !asksBeside) {
       system +=
         `\n\nTa wiadomość dotyczy pasma ${namedRange}. To temat górski, także gdy użytkownik pisze tylko o wyjeździe i nie używa słowa „góry”. ` +
-        'Nie używaj gadki o sprawach spoza gór. Odpowiedz najpierw z blogów, potem ze szczytów (nazwa i wysokość), a plan trasy ze szlaków. Dopytaj wyłącznie o brakujący konkret do trasy.';
+        'Nie używaj gadki o sprawach spoza gór. Odpowiedz najpierw z blogów, potem ze szczytów (nazwa i wysokość), a plan trasy ze szlaków. ' +
+        'Nie wywołuj suggest_nearby_ranges i nie powtarzaj listy najbliższych pasm od punktu startu. Dopytaj wyłącznie o brakujący konkret do trasy.';
+    }
+
+    if (specificTarget) {
+      system +=
+        '\n\nBieżące pytanie nie jest prośbą o listę najbliższych pasm. Nie wywołuj suggest_nearby_ranges. ' +
+        'Nie zaczynaj od „Liczę od” i nie wklejaj poprzedniej listy, nawet jeśli tak wyglądała ostatnia odpowiedź. ' +
+        'Odpowiedz na to, o co użytkownik pyta teraz.';
+    }
+
+    if (focusBlock) {
+      system += `\n\nOkolica pasma — odpowiedz na tej podstawie, własnymi słowami:\n${focusBlock}`;
     }
 
     if (suggestionBlock) {
@@ -544,7 +620,11 @@ export class GuideService {
             }
           }
           this.absorbToolResult(sourceIds, resolvedSources, knownPeaks, toolResult);
-          if (call.name === 'suggest_nearby_ranges' && toolResult.directReply) {
+          if (
+            call.name === 'suggest_nearby_ranges' &&
+            toolResult.directReply &&
+            messageAllowsNearbyList(dto.message, priorAskedForDeparture)
+          ) {
             nearbyFallback = toolResult.directReply;
           }
           messages.push({
@@ -568,11 +648,15 @@ export class GuideService {
       .filter((turn) => turn.role === 'user')
       .map((turn) => turn.content);
     const staysOnMountains = messageStaysOnMountains(dto.message, priorUserTexts);
-    if (!finalText) {
+    const repeatedNearbyList = isNearbyRangesTemplate(finalText);
+    if (specificTarget && focusFallback && (!finalText || isOffTopicGuideReply(finalText) || repeatedNearbyList)) {
+      finalText = focusFallback;
+    } else if (!finalText) {
       finalText =
         nearbyFallback ??
         'Nie udało się przygotować odpowiedzi. Spróbuj przeformułować pytanie lub zawęzić temat.';
     } else if (
+      !specificTarget &&
       nearbyFallback &&
       (isOffTopicGuideReply(finalText) || dropsSuggestedRanges(finalText, nearbyFallback))
     ) {

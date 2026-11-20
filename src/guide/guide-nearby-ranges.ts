@@ -1,6 +1,10 @@
 import { D1Service } from '../cloudflare/d1.service';
 import { RAG_SOURCE_LOCATIONS } from '../rag/rag.constants';
-import { extractMountainRange } from './guide-catalog.prefetch';
+import {
+  extractLooseRange,
+  extractMountainRange,
+  placeAskedAbout,
+} from './guide-catalog.prefetch';
 import { GuideToolResult } from './guide.types';
 
 /** Najwyżej tyle pasm w jednej propozycji wyjazdu. */
@@ -117,9 +121,18 @@ export function messageGivesDeparturePlace(message: string): boolean {
   );
 }
 
+/** Pytanie o konkretne pasmo albo szczyt, a nie o „gdzie jechać w góry”. */
+export function messageTargetsSpecificPlace(message: string): boolean {
+  const trimmed = message.trim();
+  if (!trimmed) {
+    return false;
+  }
+  return Boolean(extractMountainRange(trimmed) || extractLooseRange(trimmed) || placeAskedAbout(trimmed));
+}
+
 export function messageWantsRangeSuggestion(message: string): boolean {
   const trimmed = message.trim();
-  if (!trimmed || extractMountainRange(trimmed)) {
+  if (!trimmed || messageTargetsSpecificPlace(trimmed)) {
     return false;
   }
   const mountains =
@@ -132,6 +145,85 @@ export function messageWantsRangeSuggestion(message: string): boolean {
   return /pojech|jad[eę]|wyjech|wypraw|wybier|rusz|proponuj|pole[cć]|dok[aą]d|gdzie|chc[eę]/i.test(
     trimmed,
   );
+}
+
+const NOT_A_PLACE = new Set([
+  'gory',
+  'gorach',
+  'pogoda',
+  'szczyt',
+  'szlak',
+  'trasa',
+  'tak',
+  'nie',
+  'hej',
+  'dzieki',
+  'dziekuje',
+  'weekend',
+  'jutro',
+]);
+
+function barePlaceText(message: string): string {
+  return message
+    .trim()
+    .replace(/[.!?]+$/u, '')
+    .replace(/^(?:a|to|no|ok|okej)\s+/iu, '')
+    .trim();
+}
+
+/** Sama miejscowość, odpowiedź na pytanie „skąd jedziesz”. */
+export function bareLocalityMessage(message: string): boolean {
+  const trimmed = barePlaceText(message);
+  if (/^(?:z|ze|od)\s+[\p{L}][\p{L}'’-]+(?:\s+[\p{L}][\p{L}'’-]+){0,2}$/iu.test(trimmed)) {
+    return true;
+  }
+  return /^[\p{L}][\p{L}'’-]+(?:\s+[\p{L}][\p{L}'’-]+){0,2}$/iu.test(trimmed);
+}
+
+/**
+ * Użytkownik sam zmienia punkt startu.
+ * Nazwa szczytu albo pasma w pytaniu „co jest przy…” startu nie zmienia.
+ */
+export function messageReplacesDeparture(message: string, placeAnswerExpected = false): boolean {
+  if (messageTargetsSpecificPlace(message)) {
+    return false;
+  }
+  if (messageGivesDeparturePlace(message)) {
+    return true;
+  }
+  if (/\b(?:jad[eę]|wyjeżdżam|wyjezdzam|start(?:uję|uje)?|licz(?:ę|e)?|ruszam)\s+(?:z|ze|od)\b/iu.test(message)) {
+    return true;
+  }
+  if (!bareLocalityMessage(message)) {
+    return false;
+  }
+  const raw = barePlaceText(message).replace(/^(?:z|ze|od)\s+/iu, '');
+  if (NOT_A_PLACE.has(foldPolish(raw))) {
+    return false;
+  }
+  if (placeAnswerExpected) {
+    return true;
+  }
+  return /^[\p{Lu}]/u.test(raw) || /^(?:z|ze|od)\s+/iu.test(barePlaceText(message));
+}
+
+/** Lista najbliższych pasm tylko przy otwartym „dokąd w góry” albo przy podaniu startu. */
+export function messageAllowsNearbyList(message: string, placeAnswerExpected = false): boolean {
+  if (messageTargetsSpecificPlace(message)) {
+    return false;
+  }
+  if (messageWantsRangeSuggestion(message)) {
+    return true;
+  }
+  if (messageReplacesDeparture(message, placeAnswerExpected)) {
+    return true;
+  }
+  const words = message.trim().split(/\s+/).filter(Boolean);
+  return mentionedVoivodeship(message) !== undefined && words.length > 0 && words.length <= 4;
+}
+
+export function isNearbyRangesTemplate(text: string): boolean {
+  return /Najbliższe pasma — odległość w linii prostej/.test(text);
 }
 
 export function assistantAskedForDeparture(contents: string[]): boolean {
@@ -400,11 +492,26 @@ export async function runSuggestNearbyRanges(
   location: { lat: number; lng: number } | undefined,
   signal?: AbortSignal,
   departure?: StatedDeparture,
+  userMessage?: string,
+  placeAnswerExpected = false,
 ): Promise<GuideToolResult> {
+  if (userMessage && !messageAllowsNearbyList(userMessage, placeAnswerExpected)) {
+    return specificTargetRefusal(departure);
+  }
+
   const limit = clampLimit(args.limit);
   const filled = fillDepartureArgs(args, departure);
-  const locality = filled.locality;
-  const voivodeship = filled.voivodeship;
+  let locality = filled.locality;
+  let voivodeship = filled.voivodeship;
+  if (
+    departure &&
+    locality &&
+    normalizePlaceLabel(locality) !== normalizePlaceLabel(departure.locality) &&
+    (!userMessage || !messageReplacesDeparture(userMessage, placeAnswerExpected))
+  ) {
+    locality = departure.locality;
+    voivodeship = departure.voivodeship;
+  }
 
   try {
     if (locality) {
@@ -563,6 +670,271 @@ async function nearestRangePeaks(
     LIMIT ?`;
   const rows = await d1.query<RangePeakDistance>(sql, [lat, lng, lat, limit]);
   return takeNearestRanges(rows, limit);
+}
+
+export function formatRangesBesideReply(
+  anchor: { range_name: string; name: string; elevation_m: number },
+  neighbors: RangePeakDistance[],
+  departure?: StatedDeparture,
+): string {
+  const lines = neighbors
+    .map((range) => {
+      const km = formatKm(range.distance_km);
+      return `- **${range.range_name}** — około ${km} km do ${range.name} (${range.elevation_m} m.n.p.m.)`;
+    })
+    .join('\n');
+  const start = startStays(departure);
+  return (
+    `${start}Obok pasma ${anchor.range_name} (liczone od szczytu ${anchor.name}, ${anchor.elevation_m} m.n.p.m.) leżą:\n\n` +
+    `${lines}\n\n` +
+    'Które z nich chcesz zobaczyć bliżej?'
+  );
+}
+
+export function formatRangePickReply(
+  phrase: string,
+  peaks: Array<{ name: string; elevationM: number }>,
+  departure?: StatedDeparture,
+): string {
+  const lines = peaks.slice(0, MAX_NEARBY_RANGES).map((peak) => {
+    const elevation =
+      Number.isFinite(peak.elevationM) && peak.elevationM > 0
+        ? ` (${Math.round(peak.elevationM)} m.n.p.m.)`
+        : '';
+    return `- **${peak.name}**${elevation}`;
+  });
+  return `${startStays(departure)}W paśmie, o które pytasz (${phrase}), z katalogu trailON:\n\n${lines.join('\n')}\n\nKtóry szczyt bierzemy na trasę?`;
+}
+
+export function formatPeakFocusReply(
+  peak: { name: string; elevation_m: number; range_name: string; description?: string | null },
+  departure?: StatedDeparture,
+  alternatives?: Array<{ name: string; elevation_m: number; range_name: string }>,
+): string {
+  const start = startStays(departure);
+  if (alternatives && alternatives.length > 1) {
+    const lines = alternatives
+      .slice(0, MAX_NEARBY_RANGES)
+      .map(
+        (item) =>
+          `- **${item.name}** (${Math.round(item.elevation_m)} m.n.p.m.) — ${item.range_name}`,
+      )
+      .join('\n');
+    return `${start}W katalogu jest więcej niż jeden szczyt pasujący do „${peak.name}”:\n\n${lines}\n\nKtóry masz na myśli?`;
+  }
+  const description = clipText(peak.description, 420);
+  const about = description ? `\n\n${description}` : '';
+  return `${start}${peak.name} (${Math.round(peak.elevation_m)} m.n.p.m.) leży w paśmie ${peak.range_name}.${about}`;
+}
+
+interface AnchorPeak {
+  peak_id: string;
+  name: string;
+  elevation_m: number;
+  range_name: string;
+  lat: number;
+  lng: number;
+  description?: string | null;
+}
+
+export async function runRangesBeside(
+  d1: D1Service,
+  like: string,
+  preferPrefix: string | undefined,
+  departure?: StatedDeparture,
+): Promise<GuideToolResult | undefined> {
+  const stem = likeSafe(like);
+  if (stem.length < 4) {
+    return undefined;
+  }
+  try {
+    const table = d1.assertTableName(d1.peaksTable);
+    const rows = await d1.query<AnchorPeak>(
+      `SELECT peak_id, name, elevation_m, range_name, lat, lng
+       FROM ${table}
+       WHERE status = 'published'
+         AND lat IS NOT NULL
+         AND lng IS NOT NULL
+         AND range_name LIKE ?
+       ORDER BY elevation_m DESC
+       LIMIT 30`,
+      [`%${stem}%`],
+    );
+    const anchor = pickAnchor(rows, preferPrefix);
+    if (!anchor) {
+      return undefined;
+    }
+    const nearest = await nearestRangePeaks(d1, anchor.lat, anchor.lng, MAX_NEARBY_RANGES + 1);
+    const anchorRange = foldPolish(anchor.range_name);
+    const neighbors = nearest
+      .filter((range) => foldPolish(range.range_name) !== anchorRange)
+      .slice(0, MAX_NEARBY_RANGES);
+    if (neighbors.length === 0) {
+      return undefined;
+    }
+    const reply = formatRangesBesideReply(anchor, neighbors, departure);
+    const facts = neighbors
+      .map((range, index) => {
+        const km = formatKm(range.distance_km);
+        return `${index + 1}. ${range.range_name} — ${km} km do ${range.name} (${range.elevation_m} m.n.p.m., id=${range.peak_id})`;
+      })
+      .join('\n');
+    return focusResult(
+      `Pytanie jest o okolice pasma ${anchor.range_name}, nie o listę najbliższych pasm od miejscowości.\n` +
+        `Fakty liczone w linii prostej od szczytu ${anchor.name} (${anchor.elevation_m} m.n.p.m., id=${anchor.peak_id}) w tym paśmie:\n` +
+        `${facts}\n\n` +
+        'Napisz to po ludzku. Nie zaczynaj od „Liczę od”. Nie powtarzaj poprzedniej listy pasm od punktu startu. ' +
+        startNote(departure),
+      reply,
+      neighbors,
+    );
+  } catch (error) {
+    if (error instanceof Error && /abort/i.test(error.name)) {
+      throw error;
+    }
+    return undefined;
+  }
+}
+
+export async function runPeakFocus(
+  d1: D1Service,
+  name: string,
+  departure?: StatedDeparture,
+): Promise<GuideToolResult | undefined> {
+  const query = likeSafe(name);
+  if (query.length < 3) {
+    return undefined;
+  }
+  try {
+    const table = d1.assertTableName(d1.peaksTable);
+    const rows = await d1.query<AnchorPeak>(
+      `SELECT peak_id, name, elevation_m, range_name, lat, lng, description
+       FROM ${table}
+       WHERE status = 'published' AND name LIKE ?
+       ORDER BY recommended DESC, elevation_m DESC
+       LIMIT 8`,
+      [`%${query}%`],
+    );
+    const ranked = [...rows].sort(
+      (left, right) => rankPeakName(left.name, query) - rankPeakName(right.name, query),
+    );
+    const best = ranked[0];
+    if (!best || rankPeakName(best.name, query) > 1) {
+      return undefined;
+    }
+    const same = ranked.filter((row) => rankPeakName(row.name, query) <= 1).slice(0, MAX_NEARBY_RANGES);
+    const several = same.length > 1 && rankPeakName(best.name, query) > 0;
+    const reply = formatPeakFocusReply(best, departure, several ? same : undefined);
+    const facts = same
+      .map(
+        (row) =>
+          `${row.name} (${row.elevation_m} m.n.p.m.) | pasmo: ${row.range_name} | id=${row.peak_id}` +
+          (row.description?.trim() ? `\n${row.description.trim()}` : ''),
+      )
+      .join('\n\n');
+    return focusResult(
+      `Pytanie jest o ten szczyt, nie o nową miejscowość i nie o listę najbliższych pasm.\n${facts}\n\n` +
+        'Opisz szczyt z tych faktów i z bloga, jeśli jest w materiałach. Nie zaczynaj od „Liczę od”. ' +
+        startNote(departure),
+      reply,
+      same.map((row) => ({
+        peak_id: row.peak_id,
+        name: row.name,
+        elevation_m: row.elevation_m,
+        range_name: row.range_name,
+        distance_km: 0,
+      })),
+    );
+  } catch (error) {
+    if (error instanceof Error && /abort/i.test(error.name)) {
+      throw error;
+    }
+    return undefined;
+  }
+}
+
+function specificTargetRefusal(departure?: StatedDeparture): GuideToolResult {
+  return {
+    text:
+      'To nie jest prośba o listę najbliższych pasm. Nie pisz „Liczę od…” i nie wklejaj poprzedniej listy. ' +
+      'Odpowiedz na pytanie o konkretne pasmo, szczyt albo okolicę. ' +
+      startNote(departure),
+    sourceKeys: [],
+  };
+}
+
+function startStays(departure?: StatedDeparture): string {
+  if (!departure) {
+    return '';
+  }
+  return `Start zostaje: ${departure.locality} (woj. ${departure.voivodeship}).\n\n`;
+}
+
+function startNote(departure?: StatedDeparture): string {
+  if (!departure) {
+    return 'Nie szukaj nowego punktu startu.';
+  }
+  return `Punkt startu zostaje: ${departure.locality} (woj. ${departure.voivodeship}). Jedno zdanie o dojeździe wolno dodać, gdy pomaga.`;
+}
+
+function focusResult(instruction: string, reply: string, ranges: RangePeakDistance[]): GuideToolResult {
+  return {
+    text: instruction,
+    focusReply: reply,
+    sourceKeys: ranges.map((range) => `peak:${range.peak_id}`),
+    sources: ranges.map((range) => ({
+      id: range.peak_id,
+      title: range.name,
+      source: RAG_SOURCE_LOCATIONS.szczyty,
+    })),
+    peaks: ranges.map((range) => ({
+      id: range.peak_id,
+      name: range.name,
+      elevationM: range.elevation_m,
+    })),
+  };
+}
+
+function pickAnchor(rows: AnchorPeak[], preferPrefix: string | undefined): AnchorPeak | undefined {
+  const located = rows.filter(
+    (row) => row.range_name?.trim() && row.name?.trim() && Number.isFinite(row.lat) && Number.isFinite(row.lng),
+  );
+  if (located.length === 0) {
+    return undefined;
+  }
+  const prefix = preferPrefix ? foldPolish(preferPrefix) : '';
+  const preferred = prefix
+    ? located.filter((row) => foldPolish(row.range_name).startsWith(prefix))
+    : located;
+  const pool = preferred.length > 0 ? preferred : located;
+  return [...pool].sort((left, right) => Number(right.elevation_m) - Number(left.elevation_m))[0];
+}
+
+function rankPeakName(candidate: string, query: string): number {
+  const left = foldPolish(candidate);
+  const right = foldPolish(query);
+  if (!left || !right) {
+    return 3;
+  }
+  if (left === right) {
+    return 0;
+  }
+  if (left.startsWith(right) || right.startsWith(left)) {
+    return 1;
+  }
+  return 2;
+}
+
+function likeSafe(value: string): string {
+  return value.replace(/[%_]/g, '').trim();
+}
+
+function clipText(value: string | null | undefined, max: number): string {
+  const trimmed = value?.trim() ?? '';
+  if (trimmed.length <= max) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, max - 1).trimEnd()}…`;
 }
 
 function copyResult(copy: GuideCopy, ranges: RangePeakDistance[]): GuideToolResult {

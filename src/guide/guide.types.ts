@@ -9,6 +9,10 @@ export interface GuideToolRequestContext {
     locality: string;
     voivodeship: string;
   };
+  /** Bieżąca wiadomość. Narzędzie listy pasm nie traktuje nazwy szczytu jako nowego startu. */
+  userMessage?: string;
+  /** Asystent właśnie pytał o miejscowość. Sama nazwa miejscowości jest wtedy odpowiedzią, nie pytaniem o szczyt. */
+  placeAnswerExpected?: boolean;
   /** Współrzędne wyliczone z departure w tym żądaniu, żeby nie geokodować drugi raz. */
   resolvedDeparture?: {
     lat: number;
@@ -37,6 +41,8 @@ export interface GuideToolResult {
   peaks?: GuidePeakElevation[];
   /** Gotowa odpowiedź, gdy model wklei gadkę spoza gór zamiast propozycji pasm. */
   directReply?: string;
+  /** Odpowiedź na konkretne pasmo albo szczyt, gdy model i tak wklei listę „Liczę od…”. */
+  focusReply?: string;
   embeddingCalls?: number;
   usage?: {
     promptTokens: number;

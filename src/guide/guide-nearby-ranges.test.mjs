@@ -7,10 +7,16 @@ import {
   formatAskForOrigin,
   formatNearbyRanges,
   formatNeedVoivodeship,
+  formatPeakFocusReply,
+  formatRangePickReply,
+  formatRangesBesideReply,
   fillDepartureArgs,
+  isNearbyRangesTemplate,
   latestStatedDeparture,
   mentionedVoivodeship,
+  messageAllowsNearbyList,
   messageGivesDeparturePlace,
+  messageReplacesDeparture,
   messageWantsRangeSuggestion,
   resolveDeparturePlace,
   statedDepartureFromText,
@@ -68,6 +74,60 @@ test('propozycja wyjazdu bez nazwy pasma jest pytaniem o najbliższe pasma', () 
   assert.equal(messageWantsRangeSuggestion('Poleć mi coś w górach'), true);
   assert.equal(messageWantsRangeSuggestion('Chcę wyjechać w Bieszczady'), false);
   assert.equal(messageWantsRangeSuggestion('Jaka pogoda na Śnieżce?'), false);
+  assert.equal(messageWantsRangeSuggestion('A co jest obok gór kaczawskich?'), false);
+  assert.equal(messageWantsRangeSuggestion('Chce jechać w góry kaczawskie co polecasz'), false);
+  assert.equal(messageWantsRangeSuggestion('Co jest przy Grodziec?'), false);
+});
+
+test('znany start zostaje, dopóki użytkownik sam nie wskaże innego', () => {
+  assert.equal(messageAllowsNearbyList('Chcę pojechać w góry, co proponujesz?'), true);
+  assert.equal(messageAllowsNearbyList('Głogów'), true);
+  assert.equal(messageAllowsNearbyList('głogów', true), true);
+  assert.equal(messageAllowsNearbyList('A co jest obok gór kaczawskich?'), false);
+  assert.equal(messageAllowsNearbyList('Chce jechać w góry kaczawskie co polecasz'), false);
+  assert.equal(messageAllowsNearbyList('Co jest przy Grodziec?'), false);
+  assert.equal(messageReplacesDeparture('Co jest przy Grodziec?'), false);
+  assert.equal(messageReplacesDeparture('Głogów'), true);
+  assert.equal(messageReplacesDeparture('Jadę z Zakopanego, małopolskie'), true);
+  assert.equal(isNearbyRangesTemplate('Liczę od Głogów (woj. dolnośląskie). Najbliższe pasma — odległość w linii prostej do szczytu w paśmie:'), true);
+  assert.equal(isNearbyRangesTemplate('Obok Gór Kaczawskich leżą Rudawy Janowickie.'), false);
+});
+
+test('pytanie o pasmo i szczyt nie wraca do listy od miejscowości', () => {
+  const beside = formatRangesBesideReply(
+    { range_name: 'Góry Kaczawskie', name: 'Dłużek', elevation_m: 592 },
+    [
+      { peak_id: 'a', name: 'Skopiec', elevation_m: 724, range_name: 'Góry Kaczawskie', distance_km: 0 },
+      { peak_id: 'b', name: 'Ostrzyca', elevation_m: 501, range_name: 'Pogórze Kaczawskie', distance_km: 12.4 },
+    ].slice(1),
+    { locality: 'Głogów', voivodeship: 'dolnośląskie' },
+  );
+  assert.match(beside, /Start zostaje: Głogów/);
+  assert.match(beside, /Pogórze Kaczawskie/);
+  assert.equal(beside.includes('Najbliższe pasma'), false);
+  assert.equal(isNearbyRangesTemplate(beside), false);
+
+  const pick = formatRangePickReply(
+    'góry kaczawskie',
+    [{ name: 'Dłużek', elevationM: 592 }],
+    { locality: 'Głogów', voivodeship: 'dolnośląskie' },
+  );
+  assert.match(pick, /\*\*Dłużek\*\* \(592 m\.n\.p\.m\.\)/);
+  assert.equal(pick.includes('Liczę od'), false);
+
+  const peak = formatPeakFocusReply(
+    {
+      name: 'Grodziec',
+      elevation_m: 389,
+      range_name: 'Pogórze Kaczawskie',
+      description: 'Bazaltowy nek wulkaniczny ze zamkiem.',
+    },
+    { locality: 'Głogów', voivodeship: 'dolnośląskie' },
+  );
+  assert.match(peak, /Grodziec \(389 m\.n\.p\.m\.\)/);
+  assert.match(peak, /Pogórze Kaczawskie/);
+  assert.match(peak, /Start zostaje: Głogów/);
+  assert.equal(peak.includes('Góry Orlickie'), false);
 });
 
 test('śląskie nie myli się z dolnośląskim', () => {

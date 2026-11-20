@@ -28,11 +28,127 @@ export function extractMountainRange(message: string): string | undefined {
   return undefined;
 }
 
+export interface LooseRange {
+  /** Fragment z wiadomości, np. „gór kaczawskich”. */
+  phrase: string;
+  /** Rdzeń do LIKE w katalogu, np. „kaczawsk”. */
+  like: string;
+  /** „Góry”, „Pogórze” albo „Wzgórza”, gdy da się to wyczytać z wiadomości. */
+  preferPrefix?: 'Góry' | 'Pogórze' | 'Wzgórza';
+}
+
+const RANGE_HEAD =
+  /(?:^|[^\p{L}])(gór(?:y|ach|om|ami|ę)?|pogórz(?:e|a|u|em)?|wzgórz(?:a|ach|om|ami|e)?)\s+([\p{L}][\p{L}'’-]+)/iu;
+
+const RANGE_NAME_STOP = new Set([
+  'w',
+  'na',
+  'do',
+  'od',
+  'ze',
+  'czy',
+  'jak',
+  'dla',
+  'pod',
+  'nad',
+  'przy',
+  'oraz',
+  'albo',
+  'cos',
+  'sie',
+  'nie',
+  'tak',
+  'tym',
+  'tej',
+  'tego',
+  'ten',
+  'tam',
+  'tylko',
+  'jeszcze',
+  'bardzo',
+  'prosze',
+  'co',
+  'to',
+  'te',
+  'ta',
+]);
+
+const RANGE_ENDINGS = ['iego', 'emu', 'ymi', 'imi', 'ych', 'ich', 'ego', 'ie', 'ia', 'ej', 'a', 'e', 'y', 'i', 'u'];
+
+/**
+ * Pasmo nazwane wprost, także poza krótką listą słów kluczowych.
+ * „góry kaczawskie”, „gór kaczawskich”, „pogórze kaczawskie”.
+ */
+export function extractLooseRange(message: string): LooseRange | undefined {
+  const match = RANGE_HEAD.exec(message);
+  const head = match?.[1];
+  const name = match?.[2];
+  if (!head || !name) {
+    return undefined;
+  }
+  const foldedName = normalizePolish(name);
+  if (foldedName.length < 4 || RANGE_NAME_STOP.has(foldedName)) {
+    return undefined;
+  }
+  const like = rangeStem(foldedName);
+  if (like.length < 4) {
+    return undefined;
+  }
+  const foldedHead = normalizePolish(head);
+  const preferPrefix = foldedHead.startsWith('pogorz')
+    ? 'Pogórze'
+    : foldedHead.startsWith('wzgorz')
+      ? 'Wzgórza'
+      : 'Góry';
+  return {
+    phrase: `${head} ${name}`,
+    like,
+    preferPrefix,
+  };
+}
+
+/** „co jest przy Grodziec”, nie „obok gór kaczawskich” — to drugie jest pasmem. */
+export function placeAskedAbout(message: string): string | undefined {
+  const match =
+    /(?:^|[^\p{L}])(?:co\s+jest\s+)?(?:przy|obok|koło|kolo)\s+([\p{L}][\p{L}'’-]+(?:\s+[\p{L}][\p{L}'’-]+){0,2})/iu.exec(
+      message,
+    );
+  const phrase = match?.[1]?.trim();
+  if (!phrase) {
+    return undefined;
+  }
+  const head = normalizePolish(phrase.split(/\s+/)[0] ?? '');
+  if (/^(gor|pogorz|wzgorz)/.test(head) || RANGE_NAME_STOP.has(head)) {
+    return undefined;
+  }
+  return phrase;
+}
+
+export function messageAsksWhatIsBeside(message: string): boolean {
+  return /(?:^|[^\p{L}])(obok|koło|kolo|sąsiad\p{L}*|sasied\p{L}*|granicz\p{L}*|okolic\p{L}*|pobliżu|poblizu)/iu.test(
+    message,
+  );
+}
+
 export function messageConcernsPeaks(message: string): boolean {
-  if (extractMountainRange(message)) {
+  if (extractMountainRange(message) || extractLooseRange(message) || placeAskedAbout(message)) {
     return true;
   }
   return /(szczyt|szczyty|najwyższ|pasmo\s+gór|góry\b|górsk)/i.test(message);
+}
+
+function rangeStem(foldedName: string): string {
+  for (const ending of RANGE_ENDINGS) {
+    if (!foldedName.endsWith(ending)) {
+      continue;
+    }
+    const stem = foldedName.slice(0, -ending.length);
+    const longEnough = ending.length === 1 ? stem.length >= 5 : stem.length >= 4;
+    if (longEnough) {
+      return stem;
+    }
+  }
+  return foldedName;
 }
 
 function normalizePolish(input: string): string {
@@ -129,8 +245,16 @@ export function planCatalogPrefetch(message: string): CatalogPrefetchPlan | unde
     return undefined;
   }
 
-  const range = extractMountainRange(trimmed);
-  const materialsQuery = range ? `szczyty ${range} blog` : trimmed;
+  const knownRange = extractMountainRange(trimmed);
+  const looseRange = knownRange ? undefined : extractLooseRange(trimmed);
+  const range =
+    knownRange ??
+    (looseRange ? `${looseRange.preferPrefix ?? ''} ${looseRange.like}`.trim() : undefined);
+  const materialsQuery = knownRange
+    ? `szczyty ${knownRange} blog`
+    : looseRange
+      ? `szczyty ${looseRange.phrase} blog`
+      : trimmed;
   const requested = extractRequestedPeakCount(trimmed);
   const peaksLimit = clampInt(requested ?? 3, 1, 20);
 

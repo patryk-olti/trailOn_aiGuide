@@ -10,7 +10,13 @@ import { RagContentSource, RAG_SOURCE_LOCATIONS } from '../rag/rag.constants';
 import { OpenMeteoService } from '../weather/open-meteo.service';
 import { runGetPeakWeather } from './guide-weather.tool';
 import { LOCATION_REQUIRED_TOOL_RESULT } from './guide-location.messages';
-import { coordinatesForDeparture, runSuggestNearbyRanges } from './guide-nearby-ranges';
+import {
+  coordinatesForDeparture,
+  runPeakFocus,
+  runRangesBeside,
+  runSuggestNearbyRanges,
+} from './guide-nearby-ranges';
+import type { StatedDeparture } from './guide-nearby-ranges';
 import { formatMountainWebBrief } from './guide-web-search';
 import { LibraryRoutesService } from './library-routes.service';
 import { MOUNTAIN_INDUSTRY_DOMAINS } from './mountain-sources';
@@ -26,7 +32,7 @@ export const GUIDE_TOOLS: ChatCompletionTool[] = [
     function: {
       name: 'suggest_nearby_ranges',
       description:
-        'Gdy użytkownik chce jechać w góry i nie podał pasma, np. „Chcę pojechać w góry, co proponujesz?”. Punkt startu: miejscowość i województwo już podane w tym wątku, a gdy ich nie ma — GPS z żądania API (location). Zwraca maksymalnie 3 najbliższe pasma i odległość w linii prostej do najbliższego szczytu w każdym. Nie pytaj drugi raz o miejsce, które użytkownik już podał. Bez punktu startu nie zgaduj pasm. Nie podawaj własnych współrzędnych.',
+        'Tylko gdy użytkownik pyta, dokąd jechać w góry, i nie nazywa pasma ani szczytu. Np. „Chcę pojechać w góry, co proponujesz?” albo sama miejscowość jako punkt startu. Nie wołaj tego przy pytaniu o konkretne pasmo, szczyt, co jest obok albo co polecasz w nazwanym paśmie. Nazwa szczytu nie jest nową miejscowością. Punkt startu: miejscowość już podana w wątku, a gdy jej nie ma — GPS. Zwraca maksymalnie 3 najbliższe pasma. Bez punktu startu nie zgaduj pasm.',
       parameters: {
         type: 'object',
         properties: {
@@ -197,7 +203,15 @@ export class GuideToolsExecutor {
     }
 
     if (name === 'suggest_nearby_ranges') {
-      return runSuggestNearbyRanges(args, this.d1, request?.location, signal, request?.departure);
+      return runSuggestNearbyRanges(
+        args,
+        this.d1,
+        request?.location,
+        signal,
+        request?.departure,
+        request?.userMessage,
+        request?.placeAnswerExpected,
+      );
     }
     if (name === 'search_materials') {
       return this.searchMaterials(args);
@@ -224,6 +238,18 @@ export class GuideToolsExecutor {
       return this.searchWeb(args, signal);
     }
     return { text: `Nieznane narzędzie: ${name}`, sourceKeys: [] };
+  }
+
+  lookupRangesBeside(
+    like: string,
+    preferPrefix: string | undefined,
+    departure?: StatedDeparture,
+  ): Promise<GuideToolResult | undefined> {
+    return runRangesBeside(this.d1, like, preferPrefix, departure);
+  }
+
+  lookupPeakFocus(name: string, departure?: StatedDeparture): Promise<GuideToolResult | undefined> {
+    return runPeakFocus(this.d1, name, departure);
   }
 
   private async searchWeb(args: ToolArgs, signal?: AbortSignal): Promise<GuideToolResult> {
