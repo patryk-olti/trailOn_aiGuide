@@ -20,6 +20,7 @@ export class RagIndexService implements OnModuleInit, OnModuleDestroy {
 
   private entries: LoadedEntry[] = [];
   private blogByPeakName = new Map<string, BlogPostRef>();
+  private peakElevations: Array<{ name: string; elevationM: number }> = [];
   private loaded = false;
   private currentEtag: string | undefined;
   private refreshTimer: NodeJS.Timeout | undefined;
@@ -120,6 +121,17 @@ export class RagIndexService implements OnModuleInit, OnModuleDestroy {
     return hits;
   }
 
+  peakElevationsMentionedIn(text: string): Array<{ name: string; elevationM: number }> {
+    if (!text || this.peakElevations.length === 0) {
+      return [];
+    }
+    const folded = text.toLocaleLowerCase('pl-PL');
+    return this.peakElevations.filter((peak) => {
+      const name = peak.name.toLocaleLowerCase('pl-PL');
+      return name.length >= 4 && folded.includes(name);
+    });
+  }
+
   findBlogForPeakName(peakName: string): BlogPostRef | undefined {
     const key = normalizePeakName(peakName);
     if (key.length === 0) {
@@ -204,6 +216,7 @@ export class RagIndexService implements OnModuleInit, OnModuleDestroy {
       this.loaded = true;
       this.entries = [];
       this.blogByPeakName.clear();
+      this.peakElevations = [];
       const message = error instanceof Error ? error.message : 'unknown error';
       this.logger.warn(`Indeks RAG niedostępny (${this.indexKey}): ${message}`);
     }
@@ -211,6 +224,7 @@ export class RagIndexService implements OnModuleInit, OnModuleDestroy {
 
   private rebuildBlogPeakIndex(): void {
     this.blogByPeakName.clear();
+    this.peakElevations = collectPeakElevations(this.entries);
     const firstChunkByKey = new Map<string, LoadedEntry>();
     for (const entry of this.entries) {
       if (entry.source !== 'blog') {
@@ -262,4 +276,33 @@ export class RagIndexService implements OnModuleInit, OnModuleDestroy {
     }
     return sum;
   }
+}
+
+function collectPeakElevations(
+  entries: ReadonlyArray<{ source: string; peakName?: string; text: string }>,
+): Array<{ name: string; elevationM: number }> {
+  const byName = new Map<string, { name: string; elevationM: number }>();
+  for (const entry of entries) {
+    if (entry.source !== 'szczyty') {
+      continue;
+    }
+    const name = entry.peakName?.trim();
+    if (!name) {
+      continue;
+    }
+    const match = /Wysokość:\s*(\d+(?:[.,]\d+)?)/i.exec(entry.text);
+    if (!match?.[1]) {
+      continue;
+    }
+    const elevationM = Number(match[1].replace(',', '.'));
+    if (!Number.isFinite(elevationM) || elevationM <= 0) {
+      continue;
+    }
+    const key = normalizePeakName(name);
+    if (key.length < 4 || byName.has(key)) {
+      continue;
+    }
+    byName.set(key, { name, elevationM });
+  }
+  return [...byName.values()];
 }

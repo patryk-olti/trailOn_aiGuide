@@ -52,7 +52,7 @@ Zasady źródeł (obowiązkowe):
 - Każdą propozycję z biblioteki podaj z nazwą, pasmem, długością, trudnością i adresem url skopiowanym dosłownie. Nie wymyślaj innych tras ani linków. Gdy wynik jest pusty, napisz że w bibliotece nie ma pasującej trasy.
 - Gdy w pytaniu pada pasmo lub szczyty, najpierw korzystaj z tych danych; nie twórz listy szczytów z ogólnej wiedzy modelu.
 - W odpowiedzi domyślnie wymieniaj MAKSYMALNIE 3 szczyty. Jeśli użytkownik wyraźnie prosi o większą liczbę (np. „wymień 5 szczytów”), możesz podać więcej i dopasować limit w search_peaks.
-- Przy każdej nazwie szczytu dopisz wysokość w nawiasach, zaraz po nazwie: „Małołączniak (2020 m.n.p.m.)”. Jednostka zawsze w zapisie „m.n.p.m.”. Wysokość bierz z katalogu albo z materiałów. Jeśli przy tej nazwie jest już taka wysokość, nie dopisuj drugiej.
+- Przy każdej nazwie szczytu dopisz wysokość w nawiasach, zaraz po nazwie. Jednostka zawsze w zapisie „m.n.p.m.”. Liczbę skopiuj z katalogu albo z materiałów przy tym samym szczycie. Nie wymyślaj metrów i nie bierz liczby z tej instrukcji — nie ma tu przykładowej wysokości. Jeśli przy nazwie stoi inna wartość niż w katalogu, zastąp ją wartością z katalogu. Nie dopisuj drugiej.
 - Jeśli do szczytu jest wpis blogowy (R2, np. blog/szrenica.json), opisuj szczyt głównie z jego zajawki i kontentu; katalog D1 traktuj jako uzupełnienie (wysokość, pasmo).
 - Adres bloga wstaw tylko wtedy, gdy w linii tego samego szczytu jest pole „url bloga”. Zapisz go w osobnej linii jako „Link do bloga: ” i doklej adres 1:1. Nie pisz „URL:”.
 - Gdy linia ma „brak potwierdzonego url bloga” albo nie ma pola url — wymień szczyt z katalogu (nazwa, wysokość, pasmo, opis) i napisz, że brak wpisu blogowego. Nie wstawiaj wtedy żadnego linku.
@@ -70,7 +70,7 @@ Pogoda:
 - Opisuj wyłącznie dane z narzędzia (Open-Meteo); nie zgaduj prognozy z pamięci modelu.
 - Jeśli get_peak_weather nie poda pogody, nie wymyślaj prognozy. Dopytaj użytkownika o szczyt z listy w wyniku narzędzia: tylko szczyty w promieniu maksymalnie 5 km od jego punktu, do których da się odnieść pogodę. Nie proponuj szczytów dalej i nie poszerzaj promienia.
 Format odpowiedzi:
-- Nazwę szczytu zapisuj razem z wysokością: „Małołączniak (2020 m.n.p.m.)”.
+- Nazwę szczytu zapisuj jako „Nazwa (wysokość z katalogu m.n.p.m.)”. Liczba musi pochodzić z katalogu albo z materiałów tego szczytu.
 - Nie używaj HTML w treści. Zwróć zwykły tekst z akapitami (puste linie) i listami w formie myślników.
 - Sekcje i wyróżnienia oznaczaj jako **Nazwa sekcji** (podwójne gwiazdki) — serwis zamieni to na pogrubienie w HTML.
 - Nie dodawaj sekcji "Źródła" — serwis doklei ją automatycznie z dokładnych pól url.`;
@@ -344,7 +344,10 @@ export class GuideService {
       this.buildSources([...sourceIds], prefetched, resolvedSources),
       alreadyCitedBlogs,
     );
-    finalText = annotatePeakElevations(finalText, knownPeaks);
+    finalText = annotatePeakElevations(finalText, [
+      ...knownPeaks,
+      ...this.rag.peakElevationsMentionedIn(finalText),
+    ]);
     finalText = stripMismatchedPeakBlogUrls(finalText, peakBlogBindings(sources));
     finalText = suppressRepeatedBlogLinks(finalText, alreadyCitedBlogs);
 

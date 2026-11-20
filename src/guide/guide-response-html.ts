@@ -222,8 +222,8 @@ const BARE_ELEVATION =
 const INFLECTION_SUFFIXES = ['iem', 'owi', 'ach', 'ami', 'em', 'ie', 'om', 'ów', 'ą', 'ę', 'a', 'u', 'e', 'y', 'i', ''];
 
 /**
- * Dopisuje wysokość przy nazwie szczytu: „Małołączniak (2020 m.n.p.m.)”.
- * Istniejący nawias albo zapis metrów tuż przy nazwie jest zastępowany tą formą.
+ * Dopisuje wysokość z katalogu przy nazwie szczytu: „Nazwa (2096 m.n.p.m.)”.
+ * Inna liczba już stojąca przy nazwie jest podmieniana na wartość z katalogu.
  */
 export function annotatePeakElevations(text: string, peaks: readonly GuidePeakElevation[]): string {
   const prepared = preparePeakElevations(peaks);

@@ -144,6 +144,13 @@ test('przy nazwie szczytu dopisuje wysokość w nawiasach', () => {
     annotatePeakElevations('Małołączniak (2096 m.n.p.m.) został.', peaks),
     'Małołączniak (2096 m.n.p.m.) został.',
   );
+  assert.equal(
+    annotatePeakElevations(
+      'Małołączniak (2020 m.n.p.m.) to szczyt w Czerwonych Wierchach.',
+      peaks,
+    ),
+    'Małołączniak (2096 m.n.p.m.) to szczyt w Czerwonych Wierchach.',
+  );
   const url = 'https://trailon.pl/przewodnik/tatry/Małołączniak';
   assert.equal(annotatePeakElevations(`Opis: ${url}.`, peaks), `Opis: ${url}.`);
   assert.equal(
