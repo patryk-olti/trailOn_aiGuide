@@ -178,8 +178,10 @@ async function unansweredWeather(
   };
 }
 
-function asElevations(peaks: Array<{ name: string; elevation_m: number }>): GuidePeakElevation[] {
-  return peaks.map((peak) => ({ name: peak.name, elevationM: peak.elevation_m }));
+function asElevations(
+  peaks: Array<{ peak_id: string; name: string; elevation_m: number }>,
+): GuidePeakElevation[] {
+  return peaks.map((peak) => ({ id: peak.peak_id, name: peak.name, elevationM: peak.elevation_m }));
 }
 
 async function nearbyPeaksForWeather(

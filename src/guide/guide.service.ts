@@ -18,14 +18,28 @@ import {
   messageGivesDeparturePlace,
   messageWantsRangeSuggestion,
 } from './guide-nearby-ranges';
+import {
+  isOffTopicGuideReply,
+  MAP_UNKNOWN_REPLY,
+  messageAsksToShowOnMap,
+  messageStaysOnMountains,
+  MOUNTAIN_UNKNOWN_REPLY,
+  pickOffTopicReply,
+} from './guide-off-topic';
 import { messageAsksForRoute, messagePlansTrip, routeQueryTokens } from './library-routes';
 import { LibraryRoutesService } from './library-routes.service';
 import {
   annotatePeakElevations,
+  annotatePeakMapLinks,
   blogUrlKey,
   buildUrlTitleMap,
   collectCitedBlogUrls,
+  formatCatalogPeakMapReply,
   isTrailonBlogUrl,
+  lastMentionedPeakNames,
+  normalizeTrailonUrl,
+  peakMapUrl,
+  peaksForMapReply,
   plainTextToGuideHtml,
   stripMismatchedPeakBlogUrls,
   stripTrailingOffer,
@@ -40,20 +54,19 @@ import {
   GuideUsage,
 } from './guide.types';
 
-const OFF_TOPIC_REPLY =
-  'Hej, jestem prywatnym przewodnikiem górskim — pomagam przy górach: szlakach, szczytach, pogodzie na trasie i tym, jak iść bezpiecznie. W innych sprawach nie wchodzę, bo to nie moja działka. Jak będziesz chciał ruszyć w góry, jestem: ułożymy trasę albo sprawdzimy, co dzieje się na szlaku.';
-
-const SYSTEM_PROMPT = `Jesteś prywatnym przewodnikiem górskim trailON. Wspomagasz wyłącznie tematykę górską i korzystasz z materiałów zespołu trailON (blog, biblioteka tras, szlaki długodystansowe) oraz katalogu szczytów w Cloudflare D1.
+function systemPrompt(offTopicReply: string): string {
+  return `Jesteś prywatnym przewodnikiem górskim trailON. Wspomagasz wyłącznie tematykę górską i korzystasz z materiałów zespołu trailON (blog, biblioteka tras, szlaki długodystansowe) oraz katalogu szczytów w Cloudflare D1.
 Odpowiadaj po polsku, ciepło i po ludzku, ale konkretnie. Uwzględniaj bezpieczeństwo i realia terenu.
 
 Poza górami:
 - Nie odpowiadaj na pytania, które nie dotyczą gór: przepisy kulinarne, polityka, programowanie, praca domowa, plotki, finanse, sporty niegórskie i cała reszta.
 - Nazwa pasma albo szczytu jest tematem górskim, nawet bez słowa „góry” albo „szczyt”. Bieszczady, Tatry, Karkonosze, Beskidy, Pieniny, Góry Świętokrzyskie, Sudety i każda inna nazwa pasma albo szczytu zostają w temacie. „Chcę wyjechać w Bieszczady” to plan wyprawy w to pasmo: najpierw blog, potem szczyty, potem szlaki, a dopytaj tylko o brakujący konkret (dni, kondycja, start).
-- Dojazd w góry, nocleg przy szlaku i ekwipunek na wyjście nadal są tematem górskim. Pytanie w całości o coś innego — nie.
-- Gadki poniżej używaj tylko wtedy, gdy wiadomość nie nazywa pasma, szczytu, szlaku ani wyprawy w góry. „Chcę pojechać w góry, co proponujesz?” jest wyprawą w góry — nie używaj gadki. Blok „Propozycja wyjazdu” też znaczy, że gadka jest błędem. Przy gadce nie uruchamiaj narzędzi i nie szukaj w internecie. Nie dawaj częściowej odpowiedzi na meritum.
-- Odpowiedz wtedy dokładnie tą gadką, bez dopisków:
+- Dojazd w góry, nocleg przy szlaku, ekwipunek na wyjście, pogoda i prośba o pokazanie na mapie nadal są tematem górskim. Nawiązanie do wcześniejszej rozmowy o górach („ten szczyt”, „ta trasa”, „pokaż to”) też. Pytanie w całości o coś innego — nie.
+- Gadki poniżej używaj tylko wtedy, gdy wiadomość w całości jest spoza gór i nie nawiązuje do pasma, szczytu, szlaku, mapy ani wcześniejszej rozmowy o górach. „Chcę pojechać w góry, co proponujesz?” jest wyprawą w góry — nie używaj gadki. „Czy możesz pokazać na mapie?” też nie. Blok „Propozycja wyjazdu” też znaczy, że gadka jest błędem. Przy gadce nie uruchamiaj narzędzi i nie szukaj w internecie. Nie dawaj częściowej odpowiedzi na meritum.
+- Gdy pytanie jest o góry, a w materiałach nie ma odpowiedzi, powiedz wprost, że nie masz potwierdzonej informacji. Nie wracaj wtedy do gadki przewodnika i nie zgaduj.
+- Odpowiedz gadką dokładnie tym zdaniem, bez dopisków, i tylko przy temacie spoza gór:
 
-„${OFF_TOPIC_REPLY}”
+„${offTopicReply}”
 
 Otwarta propozycja wyjazdu, gdy nie pada nazwa pasma:
 - „Chcę pojechać w góry, co proponujesz?”, „gdzie jechać”, „co polecasz w górach” to temat górski.
@@ -77,7 +90,9 @@ Zasady źródeł (obowiązkowe — zawsze w tej kolejności, bez przeskakiwania)
 - Przy każdej nazwie szczytu dopisz wysokość w nawiasach, zaraz po nazwie. Jednostka zawsze w zapisie „m.n.p.m.”. Liczbę skopiuj z katalogu albo z materiałów przy tym samym szczycie. Nie wymyślaj metrów i nie bierz liczby z tej instrukcji — nie ma tu przykładowej wysokości. Jeśli przy nazwie stoi inna wartość niż w katalogu, zastąp ją wartością z katalogu. Nie dopisuj drugiej.
 - Jeśli do szczytu jest wpis blogowy (R2, np. blog/szrenica.json), opisuj szczyt głównie z jego zajawki i kontentu; katalog D1 traktuj jako uzupełnienie (wysokość, pasmo).
 - Adres bloga wstaw tylko wtedy, gdy w linii tego samego szczytu jest pole „url bloga”. Zapisz go w osobnej linii jako „Link do bloga: ” i doklej adres 1:1. Nie pisz „URL:”.
-- Gdy linia ma „brak potwierdzonego url bloga” albo nie ma pola url — wymień szczyt z katalogu (nazwa, wysokość, pasmo, opis) i napisz, że brak wpisu blogowego. Nie wstawiaj wtedy żadnego linku.
+- Gdy linia ma „brak potwierdzonego url bloga” albo nie ma pola url bloga — wymień szczyt z katalogu (nazwa, wysokość, pasmo, opis) i napisz, że brak wpisu blogowego. Nie wstawiaj wtedy adresu bloga. Adres z pola „url mapy” dopisz osobno.
+- Gdy w linii szczytu jest „url mapy”, dopisz osobną linię „Na mapie: ” i adres 1:1. Link otwiera ten szczyt na mapie. Nie składaj adresu sam. Szczyt spoza listy nie dostaje linku mapy.
+- Na prośbę o mapę: jeśli szczyt jest na liście, daj url mapy. Jeśli go nie ma, napisz że nie pokażesz go, bo nie ma go na liście trailON. Nie używaj wtedy gadki.
 - Nie składaj adresu z nazwy szczytu i nie podstawiaj URL innego wpisu, nawet jeśli leży obok w materiałach albo jest podobny tematycznie. Niepewny adres pomiń.
 - Dany adres bloga wstaw w rozmowie tylko raz. Jeśli ten sam URL (ten sam szczyt / ten sam wpis) był już w wcześniejszej odpowiedzi, nie wklejaj go ponownie — odpowiedz bez linku. Inny szczyt, z innym adresem, linkuj normalnie przy pierwszej wzmiance.
 - Szczytów, wysokości, tras i linków nie uzupełniaj z pamięci modelu. search_web jest krokiem 4: dopiero po blogu, szczytach i szlakach, i tylko gdy tam nie ma aktualnego faktu (zamknięcie szlaku, lawiny, komunikat parku albo służb, ostrzeżenie meteorologiczne).
@@ -97,6 +112,7 @@ Format odpowiedzi:
 - Sekcje i wyróżnienia oznaczaj jako **Nazwa sekcji** (podwójne gwiazdki) — serwis zamieni to na pogrubienie w HTML.
 - Nie dodawaj sekcji "Źródła" — serwis doklei ją automatycznie z dokładnych pól url.
 - Gdy odpowiedź już pokrywa pytanie, zakończ na ostatnim fakcie. Nie dopisuj zaproszenia w stylu „Jeśli potrzebujesz więcej informacji lub chcesz zaplanować trasę, daj znać!”. Takie zdanie dodawaj tylko wtedy, gdy do odpowiedzi brakuje konkretu, o który naprawdę trzeba dopytać (który szczyt, który dzień, skąd start).`;
+}
 
 function dropsSuggestedRanges(answer: string, reply: string): boolean {
   const names = [...reply.matchAll(/\*\*([^*]+)\*\*/g)]
@@ -214,7 +230,10 @@ export class GuideService {
     });
     usage.embeddingCalls += 1;
 
-    let system = SYSTEM_PROMPT;
+    const offTopicReply = pickOffTopicReply(
+      priorTurns.filter((turn) => turn.role === 'assistant').map((turn) => turn.content),
+    );
+    let system = systemPrompt(offTopicReply);
     if (dto.context?.trim()) {
       system += `\n\nDodatkowy kontekst użytkownika:\n${dto.context.trim()}`;
     }
@@ -273,6 +292,33 @@ export class GuideService {
       usage.embeddingCalls += peakResult.embeddingCalls ?? 0;
       this.absorbToolResult(sourceIds, resolvedSources, knownPeaks, peakResult);
       peakText = peakResult.text;
+    }
+
+    if (!peakText && messageAsksToShowOnMap(dto.message)) {
+      const corpus = [...priorTurns.map((turn) => turn.content), dto.message].join('\n');
+      const names = lastMentionedPeakNames(corpus, this.rag.peakCatalogNames(), 3);
+      if (names.length > 0) {
+        this.throwIfAborted(signal);
+        yield {
+          event: 'status',
+          data: { phase: 'prefetch', message: 'Sprawdzam szczyt na mapie…' },
+        };
+        const sections: string[] = [];
+        for (const name of names) {
+          const peakResult = await this.tools.execute(
+            'search_peaks',
+            JSON.stringify({ query: name, limit: 3 }),
+            toolContext,
+            signal,
+          );
+          usage.embeddingCalls += peakResult.embeddingCalls ?? 0;
+          this.absorbToolResult(sourceIds, resolvedSources, knownPeaks, peakResult);
+          if (!peakResult.text.startsWith('Brak szczytów')) {
+            sections.push(peakResult.text);
+          }
+        }
+        peakText = sections.join('\n\n');
+      }
     }
 
     this.throwIfAborted(signal);
@@ -353,6 +399,12 @@ export class GuideService {
 
     const siteMaterialsFound =
       blogHits.length > 0 || peakText.length > 0 || trailHits.length > 0 || libraryText.length > 0;
+
+    if (messageAsksToShowOnMap(dto.message)) {
+      system += peakText
+        ? '\n\nTa wiadomość prosi o pokazanie na mapie. To temat górski. Nie używaj gadki przewodnika. Dla szczytu z sekcji 2, który jest na liście, wklej linię „Na mapie: ” i url mapy 1:1. Szczytu spoza listy nie linkuj — napisz, że nie ma go na liście.'
+        : '\n\nTa wiadomość prosi o pokazanie na mapie, a w katalogu nie ma pasującego szczytu. To nadal temat górski. Nie używaj gadki przewodnika. Napisz wprost, że nie pokażesz tego na mapie, bo nie ma tego na liście szczytów trailON.';
+    }
 
     if (namedRange) {
       system +=
@@ -489,15 +541,32 @@ export class GuideService {
       break;
     }
 
+    const priorUserTexts = priorTurns
+      .filter((turn) => turn.role === 'user')
+      .map((turn) => turn.content);
+    const staysOnMountains = messageStaysOnMountains(dto.message, priorUserTexts);
     if (!finalText) {
       finalText =
         nearbyFallback ??
         'Nie udało się przygotować odpowiedzi. Spróbuj przeformułować pytanie lub zawęzić temat.';
     } else if (
       nearbyFallback &&
-      (finalText.includes('W innych sprawach nie wchodzę') || dropsSuggestedRanges(finalText, nearbyFallback))
+      (isOffTopicGuideReply(finalText) || dropsSuggestedRanges(finalText, nearbyFallback))
     ) {
       finalText = nearbyFallback;
+    } else if (isOffTopicGuideReply(finalText) && staysOnMountains) {
+      const corpus = [...priorTurns.map((turn) => turn.content), dto.message, finalText].join('\n');
+      const mapPeaks = messageAsksToShowOnMap(dto.message)
+        ? peaksForMapReply(knownPeaks, corpus)
+        : [];
+      const mapReply = formatCatalogPeakMapReply(mapPeaks);
+      if (mapReply) {
+        finalText = mapReply;
+      } else if (messageAsksToShowOnMap(dto.message)) {
+        finalText = MAP_UNKNOWN_REPLY;
+      } else {
+        finalText = MOUNTAIN_UNKNOWN_REPLY;
+      }
     }
 
     const sources = this.omitRepeatedBlogSources(
@@ -508,6 +577,7 @@ export class GuideService {
       ...knownPeaks,
       ...this.rag.peakElevationsMentionedIn(finalText),
     ]);
+    finalText = annotatePeakMapLinks(finalText, knownPeaks);
     finalText = stripMismatchedPeakBlogUrls(finalText, peakBlogBindings(sources));
     finalText = suppressRepeatedBlogLinks(finalText, alreadyCitedBlogs);
     finalText = stripTrailingOffer(finalText);
@@ -523,7 +593,7 @@ export class GuideService {
       event: 'done',
       data: {
         conversationId,
-        response: this.formatHtmlResponse(finalText, sources),
+        response: this.formatHtmlResponse(finalText, sources, knownPeaks),
         model: latestModel,
         sources,
         usage,
@@ -555,9 +625,21 @@ export class GuideService {
     });
   }
 
-  private formatHtmlResponse(text: string, sources: GuideSource[]): string {
+  private formatHtmlResponse(
+    text: string,
+    sources: GuideSource[],
+    peaks: readonly GuidePeakElevation[],
+  ): string {
     const cleaned = this.stripTrailingSourcesSection(text).trim();
     const urlTitles = buildUrlTitleMap(sources);
+    for (const peak of peaks) {
+      const id = peak.id?.trim();
+      const name = peak.name.trim();
+      if (!id || !name) {
+        continue;
+      }
+      urlTitles.set(normalizeTrailonUrl(peakMapUrl(id)), name);
+    }
     const contentHtml = plainTextToGuideHtml(cleaned, urlTitles, (url) =>
       this.rag.findTitleByUrl(url),
     );

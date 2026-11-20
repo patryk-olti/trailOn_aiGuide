@@ -469,7 +469,11 @@ function copyResult(copy: GuideCopy, ranges: RangePeakDistance[]): GuideToolResu
       title: range.name,
       source: RAG_SOURCE_LOCATIONS.szczyty,
     })),
-    peaks: ranges.map((range) => ({ name: range.name, elevationM: range.elevation_m })),
+    peaks: ranges.map((range) => ({
+      id: range.peak_id,
+      name: range.name,
+      elevationM: range.elevation_m,
+    })),
   };
 }
 

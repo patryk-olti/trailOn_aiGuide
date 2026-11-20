@@ -121,6 +121,10 @@ export class RagIndexService implements OnModuleInit, OnModuleDestroy {
     return hits;
   }
 
+  peakCatalogNames(): Array<{ name: string }> {
+    return this.peakElevations.map((peak) => ({ name: peak.name }));
+  }
+
   peakElevationsMentionedIn(text: string): Array<{ name: string; elevationM: number }> {
     if (!text || this.peakElevations.length === 0) {
       return [];

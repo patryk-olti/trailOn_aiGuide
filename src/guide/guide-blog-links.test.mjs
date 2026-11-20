@@ -2,13 +2,24 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   annotatePeakElevations,
+  annotatePeakMapLinks,
   collectCitedBlogUrls,
-  stripTrailingOffer,
+  formatCatalogPeakMapReply,
+  lastMentionedPeakNames,
   plainTextToGuideHtml,
   presentBlogLinkLine,
   stripMismatchedPeakBlogUrls,
+  stripTrailingOffer,
   suppressRepeatedBlogLinks,
 } from '../../dist/guide/guide-response-html.js';
+import {
+  isOffTopicGuideReply,
+  MAP_UNKNOWN_REPLY,
+  messageAsksToShowOnMap,
+  messageStaysOnMountains,
+  OFF_TOPIC_REPLIES,
+  pickOffTopicReply,
+} from '../../dist/guide/guide-off-topic.js';
 import { blogIdentityMatchesPeak } from '../../dist/rag/rag-blog-lookup.js';
 
 const SNIEZKA = 'https://trailon.pl/przewodnik/karkonosze/sniezka';
@@ -180,6 +191,36 @@ test('kompletna odpowiedź nie kończy się zaproszeniem do kolejnego pytania', 
     stripTrailingOffer('Nie mam pogody bez szczytu. Daj znać, który z tych trzech wybierasz.'),
     'Nie mam pogody bez szczytu. Daj znać, który z tych trzech wybierasz.',
   );
+});
+
+test('szczyt z listy dostaje link mapy, szczyt bez id nie', () => {
+  const text = 'Śnieżka leży na granicy.\nObok jest punkt, którego nie ma w katalogu.';
+  const next = annotatePeakMapLinks(text, [
+    { id: 'sniezka', name: 'Śnieżka', elevationM: 1602 },
+    { name: 'Chojnik', elevationM: 627 },
+  ]);
+  assert.match(next, /Na mapie: https:\/\/trailon\.pl\/map\?peakId=sniezka/);
+  assert.equal(next.includes('peakId=chojnik'), false);
+  const again = annotatePeakMapLinks(next, [{ id: 'sniezka', name: 'Śnieżka', elevationM: 1602 }]);
+  assert.equal(again.split('peakId=sniezka').length - 1, 1);
+});
+
+test('odmiana nazwy nadal trafia w szczyt do mapy', () => {
+  const names = lastMentionedPeakNames('Czy możesz pokazać Śnieżkę na mapie?', [{ name: 'Śnieżka' }], 1);
+  assert.deepEqual(names, ['Śnieżka']);
+});
+
+test('prośba o mapę bez szczytu na liście mówi wprost, a gadka się zmienia', () => {
+  assert.equal(messageAsksToShowOnMap('czy możesz pokazać na mapie?'), true);
+  assert.equal(messageStaysOnMountains('czy możesz pokazać na mapie?', []), true);
+  assert.equal(messageStaysOnMountains('jaki jest przepis na rosół?', []), false);
+  assert.equal(isOffTopicGuideReply(OFF_TOPIC_REPLIES[0]), true);
+  assert.equal(isOffTopicGuideReply('Śnieżka ma 1602 m.n.p.m.'), false);
+  const first = pickOffTopicReply([]);
+  const second = pickOffTopicReply([first]);
+  assert.notEqual(first, second);
+  assert.equal(formatCatalogPeakMapReply([]), '');
+  assert.match(MAP_UNKNOWN_REPLY, /nie ma tego na liście/);
 });
 
 test('link do trasy nie jest traktowany jak blog', () => {

@@ -16,6 +16,8 @@ export interface GuideSource {
 export interface GuidePeakElevation {
   name: string;
   elevationM: number;
+  /** Id z katalogu D1. Jest tylko wtedy, gdy szczyt jest na liście trailON. */
+  id?: string;
 }
 
 export interface GuideToolResult {

@@ -416,6 +416,171 @@ function isInsideUrl(text: string, index: number): boolean {
   return !/\s/.test(text.slice(from, index));
 }
 
+const PEAK_MAP_ID = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,80}$/;
+
+/** Adres, który czat otwiera jako popup szczytu (fioletowy, animowany marker). */
+export function peakMapUrl(peakId: string): string {
+  return `https://trailon.pl/map?peakId=${encodeURIComponent(peakId)}`;
+}
+
+export function peakIdFromMapUrl(url: string): string | undefined {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'https:') {
+      return undefined;
+    }
+    const host = parsed.hostname.toLowerCase();
+    if (host !== 'trailon.pl' && host !== 'www.trailon.pl') {
+      return undefined;
+    }
+    const path = parsed.pathname.replace(/\/+$/, '') || '/';
+    if (path !== '/map') {
+      return undefined;
+    }
+    const id = parsed.searchParams.get('peakId')?.trim() ?? '';
+    return PEAK_MAP_ID.test(id) ? id : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Przy nazwie szczytu z katalogu dopisuje linię „Na mapie: ” z adresem popup.
+ * Szczyt bez id (spoza listy) zostaje bez linku.
+ */
+export function annotatePeakMapLinks(text: string, peaks: readonly GuidePeakElevation[]): string {
+  const prepared = uniqueMappedPeaks(peaks).sort((left, right) => right.name.length - left.name.length);
+  if (!text || prepared.length === 0) {
+    return text;
+  }
+  const lines = text.split(/\r?\n/);
+  const used = new Set<string>();
+  for (const line of lines) {
+    for (const peak of prepared) {
+      if (line.includes(peakMapUrl(peak.id))) {
+        used.add(peak.id);
+      }
+    }
+  }
+  const out: string[] = [];
+  for (const line of lines) {
+    out.push(line);
+    for (const peak of prepared) {
+      if (used.has(peak.id) || !lineMentionsPeak(line, peak.name)) {
+        continue;
+      }
+      out.push(`Na mapie: ${peakMapUrl(peak.id)}`);
+      used.add(peak.id);
+    }
+  }
+  return out.join('\n');
+}
+
+/** Ostatnio wspomniane szczyty z katalogu — do prośby „pokaż na mapie”. */
+export function lastMentionedPeakNames(
+  text: string,
+  peaks: ReadonlyArray<{ name: string }>,
+  limit: number,
+): string[] {
+  const ranked = peaks
+    .map((peak) => ({ name: peak.name.trim(), at: lastPeakStart(text, peak.name.trim()) }))
+    .filter((peak) => peak.name.length >= 3 && peak.at >= 0)
+    .sort((left, right) => right.at - left.at || right.name.length - left.name.length);
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const peak of ranked) {
+    const key = normalizePeakName(peak.name);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    names.push(peak.name);
+    if (names.length >= limit) {
+      break;
+    }
+  }
+  return names;
+}
+
+export function peaksForMapReply(
+  peaks: readonly GuidePeakElevation[],
+  corpus: string,
+  limit = 3,
+): GuidePeakElevation[] {
+  const unique = uniqueMappedPeaks(peaks);
+  const mentioned = unique.filter((peak) => lastPeakStart(corpus, peak.name) >= 0);
+  const chosen = mentioned.length > 0 ? mentioned : unique;
+  if (mentioned.length > 0) {
+    chosen.sort((left, right) => lastPeakStart(corpus, right.name) - lastPeakStart(corpus, left.name));
+  }
+  return chosen.slice(0, limit);
+}
+
+export function formatCatalogPeakMapReply(peaks: readonly GuidePeakElevation[]): string {
+  const lines = peaks
+    .filter((peak) => peak.id && peak.name.trim())
+    .map((peak) => {
+      const elevation =
+        Number.isFinite(peak.elevationM) && peak.elevationM > 0
+          ? ` (${Math.round(peak.elevationM)} m.n.p.m.)`
+          : '';
+      return `${peak.name}${elevation}\nNa mapie: ${peakMapUrl(peak.id!)}`;
+    });
+  if (lines.length === 0) {
+    return '';
+  }
+  return `Na mapie:\n\n${lines.join('\n\n')}`;
+}
+
+function uniqueMappedPeaks(
+  peaks: readonly GuidePeakElevation[],
+): Array<{ id: string; name: string; elevationM: number }> {
+  const byId = new Map<string, { id: string; name: string; elevationM: number }>();
+  for (const peak of peaks) {
+    const id = peak.id?.trim() ?? '';
+    const name = peak.name.trim();
+    if (!id || name.length < 3 || byId.has(id)) {
+      continue;
+    }
+    byId.set(id, { id, name, elevationM: peak.elevationM });
+  }
+  return [...byId.values()];
+}
+
+function lastPeakStart(text: string, name: string): number {
+  if (!text || name.length < 3) {
+    return -1;
+  }
+  const prepared = [{ name, elevationM: 1 }];
+  const stem = name.length >= 6 ? name.slice(0, -1) : '';
+  let last = -1;
+  for (let index = 0; index < text.length; index += 1) {
+    if (index > 0 && isWordChar(text.charAt(index - 1))) {
+      continue;
+    }
+    const match = matchPeakAt(text, index, prepared);
+    if (match) {
+      last = index;
+      index = Math.max(index, match.end - 1);
+      continue;
+    }
+    if (!stem) {
+      continue;
+    }
+    const slice = text.slice(index, index + stem.length);
+    if (slice.localeCompare(stem, 'pl', { sensitivity: 'accent' }) !== 0) {
+      continue;
+    }
+    const ending = /^[aąeęioóuy]{0,3}(?![\p{L}\p{N}])/u.exec(text.slice(index + stem.length));
+    if (!ending) {
+      continue;
+    }
+    last = index;
+    index += stem.length + ending[0].length - 1;
+  }
+  return last;
+}
+
 export function buildUrlTitleMap(sources: GuideSource[]): Map<string, string> {
   const map = new Map<string, string>();
   for (const source of sources) {
@@ -518,11 +683,15 @@ export function formatInlineParagraphToHtml(
         return `<strong>${escapeHtml(token.value)}</strong>`;
       }
       const normalized = normalizeTrailonUrl(token.url);
-      const title =
+      const mappedTitle =
         urlTitles.get(normalized) ??
         resolveTitle?.(token.url) ??
         industrySourceLabel(token.url) ??
         (token.url.startsWith('https://trailon.pl/') ? titleFromTrailonUrl(token.url) : 'Źródło');
+      const title =
+        peakIdFromMapUrl(token.url) && (mappedTitle === 'Map' || mappedTitle === 'Źródło')
+          ? 'Pokaż na mapie'
+          : mappedTitle;
       return trailonGuideAnchor(token.url, title);
     })
     .join('');

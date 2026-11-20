@@ -14,6 +14,7 @@ import { runSuggestNearbyRanges } from './guide-nearby-ranges';
 import { formatMountainWebBrief } from './guide-web-search';
 import { LibraryRoutesService } from './library-routes.service';
 import { MOUNTAIN_INDUSTRY_DOMAINS } from './mountain-sources';
+import { peakMapUrl } from './guide-response-html';
 import { GuideSource, GuideToolRequestContext, GuideToolResult } from './guide.types';
 
 const DEFAULT_NEARBY_RADIUS_KM = 100;
@@ -530,16 +531,18 @@ export class GuideToolsExecutor {
           : '';
       const blogPart = blogUrl
         ? ` | url bloga (w odpowiedzi napisz „Link do bloga: ${blogUrl}”, adres kopiuj 1:1)`
-        : ' | brak potwierdzonego url bloga — nie podawaj linku';
+        : ' | brak potwierdzonego url bloga — nie podawaj linku do bloga';
+      const mapUrl = peakMapUrl(row.peak_id);
+      const mapPart = ` | url mapy (w odpowiedzi napisz „Na mapie: ${mapUrl}”, adres kopiuj 1:1)`;
       lines.push(
-        `${row.name} (${row.elevation_m} m.n.p.m.) | pasmo: ${row.range_name}${distance} | id=${row.peak_id}${blogPart}\nKatalog D1: ${description}${blogExcerpt}`,
+        `${row.name} (${row.elevation_m} m.n.p.m.) | pasmo: ${row.range_name}${distance} | id=${row.peak_id}${blogPart}${mapPart}\nKatalog D1: ${description}${blogExcerpt}`,
       );
     }
     return {
       text: truncate(lines.join('\n\n'), RAG_MAX_TOOL_TEXT_CHARS),
       sourceKeys,
       sources,
-      peaks: rows.map((row) => ({ name: row.name, elevationM: row.elevation_m })),
+      peaks: rows.map((row) => ({ id: row.peak_id, name: row.name, elevationM: row.elevation_m })),
     };
   }
 
