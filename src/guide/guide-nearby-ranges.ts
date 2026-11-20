@@ -98,27 +98,62 @@ export function normalizePlaceLabel(input: string): string {
     .replace(/\s+/g, ' ');
 }
 
+const VOIVODESHIP_INFLECTION = /^(?:go|mu|m|j|ego|emu|ym|im|ej)$/;
+
+function tokenMatchesVoivodeshipKey(token: string, key: string): boolean {
+  if (token === key) {
+    return true;
+  }
+  if (!token.startsWith(key)) {
+    return false;
+  }
+  const extra = token.slice(key.length);
+  return extra.length > 0 && extra.length <= 3 && VOIVODESHIP_INFLECTION.test(extra);
+}
+
+function phraseMatchesVoivodeshipKey(tokens: string[], key: string): boolean {
+  const parts = key.split(' ');
+  if (parts.length === 1) {
+    return tokens.some((token) => tokenMatchesVoivodeshipKey(token, parts[0]!));
+  }
+  for (let index = 0; index <= tokens.length - parts.length; index += 1) {
+    const headMatches = parts.slice(0, -1).every((part, offset) => tokens[index + offset] === part);
+    const last = tokens[index + parts.length - 1];
+    const stem = parts[parts.length - 1];
+    if (headMatches && last && stem && tokenMatchesVoivodeshipKey(last, stem)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function canonicalVoivodeship(input: string): string | undefined {
   const key = normalizePlaceLabel(input);
   if (!key) {
     return undefined;
   }
-  return VOIVODESHIP_KEYS.find((entry) => entry.key === key)?.name;
+  return VOIVODESHIP_KEYS.find((entry) => entry.key === key)?.name ?? mentionedVoivodeship(key);
 }
 
 export function mentionedVoivodeship(message: string): string | undefined {
-  const haystack = ` ${normalizePlaceLabel(message)} `;
-  return VOIVODESHIP_KEYS.find((entry) => haystack.includes(` ${entry.key} `))?.name;
+  const normalized = normalizePlaceLabel(message);
+  if (!normalized) {
+    return undefined;
+  }
+  const haystack = ` ${normalized} `;
+  const exact = VOIVODESHIP_KEYS.find((entry) => haystack.includes(` ${entry.key} `));
+  if (exact) {
+    return exact.name;
+  }
+  const tokens = normalized.split(' ').filter(Boolean);
+  return VOIVODESHIP_KEYS.find((entry) => phraseMatchesVoivodeshipKey(tokens, entry.key))?.name;
 }
 
 export function messageGivesDeparturePlace(message: string): boolean {
   if (!mentionedVoivodeship(message)) {
     return false;
   }
-  return (
-    /,\s*\p{L}/u.test(message) ||
-    /\b(?:z|ze|od)\s+[a-ząćęłńóśźżA-ZĄĆĘŁŃÓŚŹŻ][\p{L}'’-]+/u.test(message)
-  );
+  return localityBesideVoivodeship(message) !== undefined;
 }
 
 /** Pytanie o konkretne pasmo albo szczyt, a nie o „gdzie jechać w góry”. */
@@ -279,12 +314,19 @@ function departurePair(locality: string | undefined, voivodeship: string | undef
 }
 
 function localityBesideVoivodeship(message: string): string | undefined {
-  const from = message.match(
-    /\b(?:z|ze|od)\s+([\p{L}][\p{L}'’-]+(?:\s+[\p{L}][\p{L}'’-]+){0,2})/u,
+  const fromPattern = /\b(?:z|ze|od)\s+([\p{L}][\p{L}'’-]+(?:\s+[\p{L}][\p{L}'’-]+){0,2})/giu;
+  for (const match of message.matchAll(fromPattern)) {
+    const fromPlace = cleanPlaceToken(match[1]);
+    if (fromPlace) {
+      return fromPlace;
+    }
+  }
+  const woj = message.match(
+    /(?:^|[^\p{L}])([\p{L}][\p{L}'’-]+(?:\s+[\p{L}][\p{L}'’-]+){0,2})\s+woj(?:ewództwo)?(?:\.|\b)/iu,
   );
-  const fromPlace = cleanPlaceToken(from?.[1]);
-  if (fromPlace) {
-    return fromPlace;
+  const wojPlace = cleanPlaceToken(woj?.[1]);
+  if (wojPlace) {
+    return wojPlace;
   }
   const comma = message.match(
     /(?:^|[^\p{L}])([\p{Lu}][\p{L}'’-]+(?:\s+[\p{Lu}][\p{L}'’-]+){0,2})\s*,\s*(?:woj(?:ewództwo)?\.?\s*)?/u,
@@ -335,17 +377,25 @@ export function resolveDeparturePlace(
   locality: string,
   voivodeship: string | undefined,
 ): DeparturePlace {
+  const asked = voivodeship ? canonicalVoivodeship(voivodeship) : undefined;
+  if (voivodeship?.trim() && !asked) {
+    return { kind: 'unknown_voivodeship', given: voivodeship.trim() };
+  }
   const placeName = cleanLocality(locality);
+  if (!placeName || canonicalVoivodeship(placeName)) {
+    return {
+      kind: 'not_found',
+      locality: placeName || locality.trim(),
+      voivodeship: asked,
+      elsewhere: [],
+    };
+  }
   const exact = hits.filter(
     (hit) =>
       hit.country_code === 'PL' &&
       isValidLatLng(hit.latitude, hit.longitude) &&
       sameLocality(hit.name, placeName),
   );
-  const asked = voivodeship ? canonicalVoivodeship(voivodeship) : undefined;
-  if (voivodeship?.trim() && !asked) {
-    return { kind: 'unknown_voivodeship', given: voivodeship.trim() };
-  }
 
   if (exact.length === 0) {
     return { kind: 'not_found', locality: placeName, voivodeship: asked, elsewhere: [] };
@@ -512,6 +562,22 @@ export async function runSuggestNearbyRanges(
     locality = departure.locality;
     voivodeship = departure.voivodeship;
   }
+  const stated = userMessage ? statedDepartureFromText(userMessage) : undefined;
+  if (stated) {
+    locality = stated.locality;
+    voivodeship = stated.voivodeship;
+  } else if (locality) {
+    const cleaned = cleanLocality(locality);
+    if (cleaned && !canonicalVoivodeship(cleaned)) {
+      locality = cleaned;
+    }
+    if (voivodeship) {
+      const canonical = canonicalVoivodeship(voivodeship);
+      if (canonical) {
+        voivodeship = canonical;
+      }
+    }
+  }
 
   try {
     if (locality) {
@@ -549,14 +615,88 @@ export async function runSuggestNearbyRanges(
 
 export async function geocodeLocality(locality: string, signal?: AbortSignal): Promise<GeocodeHit[]> {
   const collected: GeocodeHit[] = [];
+  const seen = new Set<string>();
+  let failure: unknown;
   for (const query of localityQueries(locality)) {
-    const hits = await fetchGeocodeHits(query, signal);
-    collected.push(...hits);
-    if (hits.some((hit) => hit.country_code === 'PL' && sameLocality(hit.name, locality))) {
-      return collected;
+    try {
+      const hits = await fetchGeocodeHits(query, signal);
+      for (const hit of hits) {
+        const key = `${hit.country_code ?? ''}|${normalizePlaceLabel(hit.name)}|${hit.latitude.toFixed(4)}|${hit.longitude.toFixed(4)}`;
+        if (seen.has(key)) {
+          continue;
+        }
+        seen.add(key);
+        collected.push(hit);
+      }
+    } catch (error) {
+      if (error instanceof Error && /abort/i.test(error.name)) {
+        throw error;
+      }
+      failure = error;
     }
   }
+  if (collected.length === 0 && failure) {
+    throw failure;
+  }
   return collected;
+}
+
+export async function runSearchLocality(args: ToolArgs, signal?: AbortSignal): Promise<GuideToolResult> {
+  const raw = readString(args.query);
+  if (!raw) {
+    return { text: 'Podaj nazwę miejscowości.', sourceKeys: [] };
+  }
+  const stated = statedDepartureFromText(raw);
+  const explicitVoivodeship = readString(args.voivodeship);
+  const locality = stated?.locality ?? cleanLocality(raw);
+  const voivodeship =
+    stated?.voivodeship ??
+    (explicitVoivodeship
+      ? canonicalVoivodeship(explicitVoivodeship) ?? explicitVoivodeship
+      : mentionedVoivodeship(raw));
+  if (!locality || canonicalVoivodeship(locality)) {
+    return {
+      text: 'W tej wypowiedzi nie ma nazwy miejscowości. Poproś o miejscowość i województwo. Nie zgaduj współrzędnych.',
+      sourceKeys: [],
+    };
+  }
+  try {
+    const hits = await geocodeLocality(locality, signal);
+    return formatLocalitySearch(resolveDeparturePlace(hits, locality, voivodeship));
+  } catch (error) {
+    if (error instanceof Error && /abort/i.test(error.name)) {
+      throw error;
+    }
+    return copyResult(
+      {
+        instruction:
+          'Geokoder miejscowości niedostępny. Poproś, aby powtórzył miejscowość i województwo. Nie zgaduj współrzędnych ani pasm.',
+        reply:
+          'Nie udało mi się ustalić tej miejscowości na mapie. Napisz jeszcze raz, skąd jedziesz: miejscowość i województwo.',
+      },
+      [],
+    );
+  }
+}
+
+function formatLocalitySearch(place: DeparturePlace): GuideToolResult {
+  if (place.kind === 'ready') {
+    const county = place.assumption ? ` ${place.assumption}` : '';
+    return {
+      text:
+        `Miejscowość ustalona: ${place.locality} (woj. ${place.voivodeship}), współrzędne ${place.lat}, ${place.lng}.${county} ` +
+        `Wywołaj suggest_nearby_ranges z locality „${place.locality}” i voivodeship „${place.voivodeship}”. ` +
+        'Nie pytaj ponownie o miejscowość i nie podstawiaj innego miasta.',
+      sourceKeys: [],
+    };
+  }
+  if (place.kind === 'need_voivodeship') {
+    return copyResult(formatNeedVoivodeship(place.locality, place.voivodeships), []);
+  }
+  if (place.kind === 'unknown_voivodeship') {
+    return copyResult(formatUnknownVoivodeship(place.given), []);
+  }
+  return copyResult(formatPlaceNotFound(place), []);
 }
 
 export function localityQueries(locality: string): string[] {
@@ -570,6 +710,9 @@ export function localityQueries(locality: string): string[] {
   };
   push(primary);
   const words = primary.split(/\s+/).filter(Boolean);
+  if (words.length === 1 && /owa$/iu.test(primary) && primary.length > 5) {
+    push(`${primary.slice(0, -3)}ów`);
+  }
   if (words.length === 1 && /a$/i.test(primary) && primary.length > 4) {
     push(primary.slice(0, -1));
   }
@@ -1041,10 +1184,24 @@ function sameLocality(hitName: string, query: string): boolean {
 }
 
 function cleanLocality(value: string): string {
-  return value
-    .replace(/^(?:z|ze|od)\s+/i, '')
+  const text = value
+    .replace(
+      /^(?:(?:jad[eę]|wyjeżdżam|wyjezdzam|start(?:uję|uje)?|licz(?:ę|e)?|ruszam)\s+)?(?:z|ze|od)\s+/i,
+      '',
+    )
     .replace(/,.*$/, '')
+    .replace(/\bwoj(?:ewództwo)?(?:\.|\b).*$/i, '')
     .trim();
+  const tokens = text.split(/\s+/).filter(Boolean);
+  while (tokens.length > 1) {
+    const last = tokens[tokens.length - 1] ?? '';
+    if (mentionedVoivodeship(last) || /^(?:z|ze|od)$/i.test(last)) {
+      tokens.pop();
+      continue;
+    }
+    break;
+  }
+  return tokens.join(' ').trim();
 }
 
 function formatKm(distance: number): string {

@@ -13,6 +13,7 @@ import {
   fillDepartureArgs,
   isNearbyRangesTemplate,
   latestStatedDeparture,
+  localityQueries,
   mentionedVoivodeship,
   messageAllowsNearbyList,
   messageGivesDeparturePlace,
@@ -240,6 +241,76 @@ test('miejsce podane w wątku zostaje, dopóki użytkownik nie wskaże innego', 
     ),
     { locality: 'Zakopane', voivodeship: undefined },
   );
+});
+
+test('Głogów woj. i „z Głogowa” trafiają w miasto, nie w wieś o podobnej nazwie', () => {
+  assert.equal(mentionedVoivodeship('jadę z Głogowa z dolnośląskiego'), 'dolnośląskie');
+  assert.equal(mentionedVoivodeship('Głogów woj. Opolskie'), 'opolskie');
+  assert.equal(mentionedVoivodeship('ze śląskiego'), 'śląskie');
+  assert.equal(canonicalVoivodeship('dolnośląskiego'), 'dolnośląskie');
+  assert.equal(messageGivesDeparturePlace('Głogów woj. Dolnośląskie'), true);
+  assert.equal(messageGivesDeparturePlace('z dolnośląskiego'), false);
+  assert.deepEqual(statedDepartureFromText('Głogów woj. Opolskie'), {
+    locality: 'Głogów',
+    voivodeship: 'opolskie',
+  });
+  assert.deepEqual(statedDepartureFromText('Głogów woj. Dolnośląskie'), {
+    locality: 'Głogów',
+    voivodeship: 'dolnośląskie',
+  });
+  assert.deepEqual(statedDepartureFromText('jadę z Głogowa z dolnośląskiego'), {
+    locality: 'Głogowa',
+    voivodeship: 'dolnośląskie',
+  });
+  assert.ok(localityQueries('Głogowa').includes('Głogów'));
+
+  const hits = [
+    {
+      name: 'Głogów',
+      latitude: 51.66361,
+      longitude: 16.0845,
+      country_code: 'PL',
+      admin1: 'Województwo dolnośląskie',
+      admin2: 'Powiat głogowski',
+      population: 65400,
+    },
+    {
+      name: 'Głogów',
+      latitude: 51.41259,
+      longitude: 20.84999,
+      country_code: 'PL',
+      admin1: 'Województwo mazowieckie',
+      population: 109,
+    },
+    {
+      name: 'Głogowa',
+      latitude: 52.20513,
+      longitude: 19.12308,
+      country_code: 'PL',
+      admin1: 'Województwo łódzkie',
+      population: 20,
+    },
+    {
+      name: 'Głogów Małopolski',
+      latitude: 50.15122,
+      longitude: 21.96287,
+      country_code: 'PL',
+      admin1: 'województwo podkarpackie',
+      population: 5451,
+    },
+  ];
+
+  const wrongRegion = resolveDeparturePlace(hits, 'Głogów woj. Opolskie', 'opolskie');
+  assert.equal(wrongRegion.kind, 'not_found');
+  assert.equal(wrongRegion.voivodeship, 'opolskie');
+  assert.ok(wrongRegion.elsewhere.includes('dolnośląskie'));
+  assert.equal(wrongRegion.elsewhere.includes('podkarpackie'), false);
+
+  const fromGenitive = resolveDeparturePlace(hits, 'Głogowa', 'dolnośląskiego');
+  assert.equal(fromGenitive.kind, 'ready');
+  assert.equal(fromGenitive.locality, 'Głogów');
+  assert.equal(fromGenitive.voivodeship, 'dolnośląskie');
+  assert.equal(fromGenitive.lat, 51.66361);
 });
 
 test('wcześniejsza prośba o miejscowość i województwo zostaje w historii', () => {

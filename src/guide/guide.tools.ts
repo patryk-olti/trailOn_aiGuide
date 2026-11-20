@@ -14,6 +14,7 @@ import {
   coordinatesForDeparture,
   runPeakFocus,
   runRangesBeside,
+  runSearchLocality,
   runSuggestNearbyRanges,
 } from './guide-nearby-ranges';
 import type { StatedDeparture } from './guide-nearby-ranges';
@@ -47,6 +48,29 @@ export const GUIDE_TOOLS: ChatCompletionTool[] = [
           },
           limit: { type: 'integer', minimum: 1, maximum: 3, description: 'Ile pasm podać. Domyślnie 3.' },
         },
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'search_locality',
+      description:
+        'Szuka miejscowości w Polsce, gdy użytkownik podaje skąd jedzie. Przyjmuje wypowiedź tak jak ją napisał: „Głogów woj. dolnośląskie”, „jadę z Głogowa z dolnośląskiego”, samą odmianę „Głogowa”. Zwraca nazwę w mianowniku i województwo. Nie zgaduj współrzędnych. Gdy wynik wymienia kilka województw albo mówi, że tej nazwy nie ma w podanym, nie wybieraj innego. Po ustaleniu miejscowości wywołaj suggest_nearby_ranges z locality i voivodeship z wyniku.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description: 'Miejscowość albo cała wypowiedź użytkownika, np. „Głogów woj. dolnośląskie”.',
+          },
+          voivodeship: {
+            type: 'string',
+            description: 'Województwo, jeśli jest podane osobno. Może być w odmianie, np. „dolnośląskiego”.',
+          },
+        },
+        required: ['query'],
         additionalProperties: false,
       },
     },
@@ -202,6 +226,9 @@ export class GuideToolsExecutor {
       return { text: 'Nie udało się odczytać argumentów narzędzia.', sourceKeys: [] };
     }
 
+    if (name === 'search_locality') {
+      return runSearchLocality(args, signal);
+    }
     if (name === 'suggest_nearby_ranges') {
       return runSuggestNearbyRanges(
         args,

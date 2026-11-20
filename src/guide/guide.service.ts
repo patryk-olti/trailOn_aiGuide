@@ -24,6 +24,7 @@ import {
   isNearbyRangesTemplate,
   latestStatedDeparture,
   mentionedVoivodeship,
+  statedDepartureFromText,
   messageAllowsNearbyList,
   messageGivesDeparturePlace,
   messageTargetsSpecificPlace,
@@ -87,6 +88,7 @@ Otwarta propozycja wyjazdu — tylko gdy użytkownik nie nazywa pasma ani szczyt
 - Gdy punkt startu jest już w wątku, nie pytaj o niego drugi raz. Zostaje, dopóki użytkownik sam nie powie, że start jest gdzie indziej („jadę z…”, „licz od…”, sama miejscowość albo miejscowość z województwem).
 - Nazwa pasma albo szczytu nie jest nowym startem. „Co jest obok Gór Kaczawskich?”, „co polecasz w Górach Kaczawskich?” i „co jest przy Grodźcu?” zostają przy dotychczasowym starcie.
 - Gdy użytkownik poda samą miejscowość jako start, dopytaj o województwo tylko wtedy, gdy narzędzie powie, że ta nazwa leży w kilku. Nie pytaj, jeśli start jest już ustalony.
+- „Głogów woj. dolnośląskie” i „jadę z Głogowa z dolnośląskiego” to punkt startu. Najpierw search_locality z tą wypowiedzią, potem suggest_nearby_ranges z locality w mianowniku i voivodeship z wyniku. Nie powtarzaj prośby o miejscowość, jeśli narzędzie już ją rozstrzygnęło albo wskazało inne województwo.
 - Lista najbliższych pasm to maksymalnie 3 pasma i odległość do szczytu. Nie dopisuj kolejnych i nie wklejaj jej drugi raz, gdy pytanie jest o coś innego.
 - suggest_nearby_ranges wołaj tylko przy otwartym „dokąd w góry” albo gdy użytkownik podaje punkt startu. Przy pytaniu o nazwane pasmo, szczyt albo okolicę nie wołaj tego narzędzia.
 
@@ -146,6 +148,8 @@ function dropsSuggestedRanges(answer: string, reply: string): boolean {
 
 function toolStatusMessage(name: string): string {
   switch (name) {
+    case 'search_locality':
+      return 'Szukam miejscowości na mapie…';
     case 'suggest_nearby_ranges':
       return 'Szukam najbliższych pasm…';
     case 'search_peaks':
@@ -383,7 +387,9 @@ export class GuideService {
     const askedPeak = asksBeside ? undefined : placeAskedAbout(dto.message);
     const wantsSuggestion = messageWantsRangeSuggestion(dto.message);
     const departureVoivodeship = mentionedVoivodeship(dto.message);
+    const statedNow = specificTarget ? undefined : statedDepartureFromText(dto.message);
     const continueDeparture =
+      !statedNow &&
       !specificTarget &&
       departureVoivodeship !== undefined &&
       (messageGivesDeparturePlace(dto.message) || priorAskedForDeparture);
@@ -423,22 +429,25 @@ export class GuideService {
     if (!focusFallback && namedRange && !asksBeside && rangePickPeaks && rangePickPeaks.length > 0) {
       focusFallback = formatRangePickReply(namedRange, rangePickPeaks, standingDeparture);
     }
-    if (wantsSuggestion && !continueDeparture) {
+    if (statedNow || (wantsSuggestion && !continueDeparture)) {
       this.throwIfAborted(signal);
       const suggestionArgs: Record<string, unknown> = { limit: 3 };
-      if (standingDeparture) {
-        suggestionArgs.locality = standingDeparture.locality;
-        suggestionArgs.voivodeship = standingDeparture.voivodeship;
+      const origin = statedNow ?? standingDeparture;
+      if (origin) {
+        suggestionArgs.locality = origin.locality;
+        suggestionArgs.voivodeship = origin.voivodeship;
       }
       yield {
         event: 'status',
         data: {
           phase: 'prefetch',
-          message: standingDeparture
-            ? `Szukam najbliższych pasm od ${standingDeparture.locality}…`
-            : dto.location
-              ? 'Szukam najbliższych pasm od Twojej pozycji…'
-              : 'Ustalam, skąd liczyć wyjazd…',
+          message: statedNow
+            ? 'Szukam tej miejscowości na mapie…'
+            : standingDeparture
+              ? `Szukam najbliższych pasm od ${standingDeparture.locality}…`
+              : dto.location
+                ? 'Szukam najbliższych pasm od Twojej pozycji…'
+                : 'Ustalam, skąd liczyć wyjazd…',
         },
       };
       const suggestion = await this.tools.execute(
@@ -658,7 +667,9 @@ export class GuideService {
     } else if (
       !specificTarget &&
       nearbyFallback &&
-      (isOffTopicGuideReply(finalText) || dropsSuggestedRanges(finalText, nearbyFallback))
+      (isOffTopicGuideReply(finalText) ||
+        dropsSuggestedRanges(finalText, nearbyFallback) ||
+        /Nie udało mi się ustalić tej miejscowości na mapie/.test(finalText))
     ) {
       finalText = nearbyFallback;
     } else if (isOffTopicGuideReply(finalText) && staysOnMountains) {
