@@ -18,6 +18,7 @@ import {
   planCatalogPrefetch,
 } from './guide-catalog.prefetch';
 import {
+  answerDiscardsDepartureFacts,
   assistantAskedForDeparture,
   foldPolish,
   formatRangePickReply,
@@ -27,6 +28,7 @@ import {
   statedDepartureFromText,
   messageAllowsNearbyList,
   messageGivesDeparturePlace,
+  messageReplacesDeparture,
   messageTargetsSpecificPlace,
   messageWantsRangeSuggestion,
 } from './guide-nearby-ranges';
@@ -87,8 +89,8 @@ Otwarta propozycja wyjazdu — tylko gdy użytkownik nie nazywa pasma ani szczyt
 - Gdy w wątku nie ma ani miejscowości, ani GPS, nie proponuj Tatr, Beskidów ani niczego z pamięci. Przekaż prośbę: lokalizacja w TrailOn albo miejscowość i województwo.
 - Gdy punkt startu jest już w wątku, nie pytaj o niego drugi raz. Zostaje, dopóki użytkownik sam nie powie, że start jest gdzie indziej („jadę z…”, „licz od…”, sama miejscowość albo miejscowość z województwem).
 - Nazwa pasma albo szczytu nie jest nowym startem. „Co jest obok Gór Kaczawskich?”, „co polecasz w Górach Kaczawskich?” i „co jest przy Grodźcu?” zostają przy dotychczasowym starcie.
-- Gdy użytkownik poda samą miejscowość jako start, dopytaj o województwo tylko wtedy, gdy narzędzie powie, że ta nazwa leży w kilku. Nie pytaj, jeśli start jest już ustalony.
-- „Głogów woj. dolnośląskie” i „jadę z Głogowa z dolnośląskiego” to punkt startu. Najpierw search_locality z tą wypowiedzią, potem suggest_nearby_ranges z locality w mianowniku i voivodeship z wyniku. Nie powtarzaj prośby o miejscowość, jeśli narzędzie już ją rozstrzygnęło albo wskazało inne województwo.
+- Gdy użytkownik poda samą miejscowość jako start, na przykład „Głogów”, to jest punkt startu. Dopytaj o województwo tylko wtedy, gdy narzędzie powie, że ta nazwa leży w kilku. Nie pytaj, jeśli start jest już ustalony, i nie pisz, że miejscowości nie ma na mapie.
+- „Głogów”, „Głogów woj. dolnośląskie” i „jadę z Głogowa z dolnośląskiego” to punkt startu. Najpierw search_locality z tą wypowiedzią, potem suggest_nearby_ranges z locality w mianowniku i voivodeship z wyniku. Nie powtarzaj prośby o miejscowość, jeśli narzędzie już ją rozstrzygnęło albo wskazało inne województwo.
 - Lista najbliższych pasm to maksymalnie 3 pasma i odległość do szczytu. Nie dopisuj kolejnych i nie wklejaj jej drugi raz, gdy pytanie jest o coś innego.
 - suggest_nearby_ranges wołaj tylko przy otwartym „dokąd w góry” albo gdy użytkownik podaje punkt startu. Przy pytaniu o nazwane pasmo, szczyt albo okolicę nie wołaj tego narzędzia.
 
@@ -393,6 +395,11 @@ export class GuideService {
       !specificTarget &&
       departureVoivodeship !== undefined &&
       (messageGivesDeparturePlace(dto.message) || priorAskedForDeparture);
+    const bareDeparture =
+      !statedNow &&
+      !specificTarget &&
+      !continueDeparture &&
+      messageReplacesDeparture(dto.message, priorAskedForDeparture);
     let nearbyFallback: string | undefined;
     let focusFallback: string | undefined;
     let focusBlock = '';
@@ -429,11 +436,13 @@ export class GuideService {
     if (!focusFallback && namedRange && !asksBeside && rangePickPeaks && rangePickPeaks.length > 0) {
       focusFallback = formatRangePickReply(namedRange, rangePickPeaks, standingDeparture);
     }
-    if (statedNow || (wantsSuggestion && !continueDeparture)) {
+    if (statedNow || bareDeparture || (wantsSuggestion && !continueDeparture)) {
       this.throwIfAborted(signal);
       const suggestionArgs: Record<string, unknown> = { limit: 3 };
-      const origin = statedNow ?? standingDeparture;
-      if (origin) {
+      const origin = statedNow ?? (bareDeparture ? undefined : standingDeparture);
+      if (bareDeparture) {
+        suggestionArgs.locality = dto.message.trim();
+      } else if (origin) {
         suggestionArgs.locality = origin.locality;
         suggestionArgs.voivodeship = origin.voivodeship;
       }
@@ -441,7 +450,7 @@ export class GuideService {
         event: 'status',
         data: {
           phase: 'prefetch',
-          message: statedNow
+          message: statedNow || bareDeparture
             ? 'Szukam tej miejscowości na mapie…'
             : standingDeparture
               ? `Szukam najbliższych pasm od ${standingDeparture.locality}…`
@@ -669,7 +678,7 @@ export class GuideService {
       nearbyFallback &&
       (isOffTopicGuideReply(finalText) ||
         dropsSuggestedRanges(finalText, nearbyFallback) ||
-        /Nie udało mi się ustalić tej miejscowości na mapie/.test(finalText))
+        answerDiscardsDepartureFacts(finalText, nearbyFallback))
     ) {
       finalText = nearbyFallback;
     } else if (isOffTopicGuideReply(finalText) && staysOnMountains) {

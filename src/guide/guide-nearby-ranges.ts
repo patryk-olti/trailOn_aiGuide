@@ -403,13 +403,26 @@ export function resolveDeparturePlace(
 
   if (!asked) {
     const voivodeships = uniqueVoivodeships(exact);
-    if (voivodeships.length !== 1) {
-      return { kind: 'need_voivodeship', locality: displayName(exact, placeName), voivodeships };
+    if (voivodeships.length === 1) {
+      const only = voivodeships[0]!;
+      const inVoivodeship = exact.filter((hit) => canonicalVoivodeship(hit.admin1 ?? '') === only);
+      const chosen = pickMostPopulous(inVoivodeship);
+      return readyPlace(chosen, chosen.name, only, inVoivodeship.length > 1);
     }
-    const only = voivodeships[0]!;
-    const inVoivodeship = exact.filter((hit) => canonicalVoivodeship(hit.admin1 ?? '') === only);
-    const chosen = pickMostPopulous(inVoivodeship);
-    return readyPlace(chosen, chosen.name, only, inVoivodeship.length > 1);
+    const dominant = dominantAmongVoivodeships(exact);
+    if (dominant) {
+      const inVoivodeship = exact.filter(
+        (hit) => canonicalVoivodeship(hit.admin1 ?? '') === dominant.voivodeship,
+      );
+      return readyPlace(
+        dominant.hit,
+        dominant.hit.name,
+        dominant.voivodeship,
+        inVoivodeship.length > 1,
+        `Przyjmuję ${dominant.hit.name} w woj. ${dominant.voivodeship} — to największa miejscowość o tej nazwie.`,
+      );
+    }
+    return { kind: 'need_voivodeship', locality: displayName(exact, placeName), voivodeships };
   }
 
   const matched = exact.filter((hit) => canonicalVoivodeship(hit.admin1 ?? '') === asked);
@@ -432,7 +445,7 @@ export function formatAskForOrigin(): GuideCopy {
     reply:
       'Żebym mógł zaproponować konkretne pasma, a nie strzelać, potrzebuję punktu startu.\n\n' +
       'Włącz lokalizację w TrailOn — zrobię snapshot GPS i wskażę dwa albo trzy najbliższe pasma oraz ile kilometrów jest do szczytu w każdym.\n\n' +
-      'Jeśli nie chcesz podawać GPS, napisz, skąd jedziesz: miejscowość i województwo. Ta sama miejscowość leży często w kilku województwach, więc samo miasto nie wystarczy.',
+      'Jeśli nie chcesz podawać GPS, napisz, skąd jedziesz: miejscowość i województwo albo samą miejscowość. O województwo dopytam tylko wtedy, gdy ta nazwa leży w kilku.',
   };
 }
 
@@ -1108,16 +1121,65 @@ function catalogFailure(): GuideToolResult {
   );
 }
 
+/** Miasto, nie wieś o tej samej nazwie w innym województwie. Jordanów (ok. 5 tys.) nadal wymaga doprecyzowania. */
+const DOMINANT_CITY_POPULATION = 10_000;
+const DOMINANT_CITY_RATIO = 20;
+
+function dominantAmongVoivodeships(
+  hits: GeocodeHit[],
+): { hit: GeocodeHit; voivodeship: string } | undefined {
+  const byRegion = new Map<string, GeocodeHit>();
+  for (const hit of hits) {
+    const region = canonicalVoivodeship(hit.admin1 ?? '');
+    if (!region) {
+      continue;
+    }
+    const current = byRegion.get(region);
+    if (!current || (hit.population ?? 0) > (current.population ?? 0)) {
+      byRegion.set(region, hit);
+    }
+  }
+  const ranked = [...byRegion.entries()].sort(
+    (left, right) => (right[1].population ?? 0) - (left[1].population ?? 0),
+  );
+  const best = ranked[0];
+  if (!best) {
+    return undefined;
+  }
+  const population = best[1].population ?? 0;
+  const nextPopulation = ranked[1]?.[1].population ?? 0;
+  if (population < DOMINANT_CITY_POPULATION) {
+    return undefined;
+  }
+  if (nextPopulation * DOMINANT_CITY_RATIO > population) {
+    return undefined;
+  }
+  return { hit: best[1], voivodeship: best[0] };
+}
+
+export function answerDiscardsDepartureFacts(answer: string, fallback: string): boolean {
+  const deniesPlace = /nie udało mi się ustalić|nie znajduję miejscowości|nie udało[^.!\n]*na mapie/i.test(
+    answer,
+  );
+  if (!deniesPlace) {
+    return false;
+  }
+  return !/nie udało mi się ustalić|nie znajduję miejscowości/i.test(fallback);
+}
+
 function readyPlace(
   hit: GeocodeHit,
   locality: string,
   voivodeship: string,
   several: boolean,
+  assumptionOverride?: string,
 ): Extract<DeparturePlace, { kind: 'ready' }> {
   const county = hit.admin2?.replace(/\)$/, '').trim();
-  const assumption = several
-    ? `W woj. ${voivodeship} jest więcej niż jedna miejscowość „${locality}”. Przyjmuję ${county ? `${locality} (${county})` : locality}.`
-    : undefined;
+  const assumption =
+    assumptionOverride ??
+    (several
+      ? `W woj. ${voivodeship} jest więcej niż jedna miejscowość „${locality}”. Przyjmuję ${county ? `${locality} (${county})` : locality}.`
+      : undefined);
   return {
     kind: 'ready',
     lat: hit.latitude,

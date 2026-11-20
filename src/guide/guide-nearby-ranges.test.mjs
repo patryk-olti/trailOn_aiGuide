@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   MAX_NEARBY_RANGES,
+  answerDiscardsDepartureFacts,
   assistantAskedForDeparture,
   canonicalVoivodeship,
   formatAskForOrigin,
@@ -311,6 +312,20 @@ test('Głogów woj. i „z Głogowa” trafiają w miasto, nie w wieś o podobne
   assert.equal(fromGenitive.locality, 'Głogów');
   assert.equal(fromGenitive.voivodeship, 'dolnośląskie');
   assert.equal(fromGenitive.lat, 51.66361);
+
+  const bareCity = resolveDeparturePlace(hits, 'Głogów', undefined);
+  assert.equal(bareCity.kind, 'ready');
+  assert.equal(bareCity.locality, 'Głogów');
+  assert.equal(bareCity.voivodeship, 'dolnośląskie');
+  assert.equal(bareCity.lat, 51.66361);
+  assert.match(bareCity.assumption ?? '', /dolnośląskie/);
+  assert.equal(
+    answerDiscardsDepartureFacts(
+      'Nie udało mi się ustalić Głogowa na mapie. Napisz jeszcze raz, skąd jedziesz: miejscowość i województwo.',
+      'Liczę od Głogów (woj. dolnośląskie). Najbliższe pasma — odległość w linii prostej.',
+    ),
+    true,
+  );
 });
 
 test('wcześniejsza prośba o miejscowość i województwo zostaje w historii', () => {
