@@ -140,6 +140,77 @@ export function assistantAskedForDeparture(contents: string[]): boolean {
   );
 }
 
+export interface StatedDeparture {
+  locality: string;
+  voivodeship: string;
+}
+
+/**
+ * Miejscowość razem z województwem z jednej wypowiedzi.
+ * Potwierdzenie „Liczę od Kraków (woj. małopolskie)” jest pewniejsze niż odmiana z wiadomości użytkownika.
+ */
+export function statedDepartureFromText(text: string): StatedDeparture | undefined {
+  const confirmed = [...text.matchAll(
+    /([\p{Lu}][\p{L}'’-]+(?:\s+[\p{Lu}][\p{L}'’-]+){0,2})\s*\(\s*woj(?:ewództwo)?\.?\s+([^)]+)\)/gu,
+  )].at(-1);
+  const confirmedPlace = departurePair(confirmed?.[1], confirmed?.[2]);
+  if (confirmedPlace) {
+    return confirmedPlace;
+  }
+
+  const voivodeship = mentionedVoivodeship(text);
+  if (!voivodeship || !messageGivesDeparturePlace(text)) {
+    return undefined;
+  }
+  return departurePair(localityBesideVoivodeship(text), voivodeship);
+}
+
+/** Ostatnie miejsce startu w wątku. Nowsza wypowiedź zastępuje starszą. Wiadomość bez miejsca nic nie zmienia. */
+export function latestStatedDeparture(texts: readonly string[]): StatedDeparture | undefined {
+  let found: StatedDeparture | undefined;
+  for (const text of texts) {
+    const stated = statedDepartureFromText(text);
+    if (stated) {
+      found = stated;
+    }
+  }
+  return found;
+}
+
+function departurePair(locality: string | undefined, voivodeship: string | undefined): StatedDeparture | undefined {
+  const place = locality?.trim();
+  const region = voivodeship ? canonicalVoivodeship(voivodeship) : undefined;
+  if (!place || !region || canonicalVoivodeship(place)) {
+    return undefined;
+  }
+  return { locality: place, voivodeship: region };
+}
+
+function localityBesideVoivodeship(message: string): string | undefined {
+  const from = message.match(
+    /\b(?:z|ze|od)\s+([\p{L}][\p{L}'’-]+(?:\s+[\p{L}][\p{L}'’-]+){0,2})/u,
+  );
+  const fromPlace = cleanPlaceToken(from?.[1]);
+  if (fromPlace) {
+    return fromPlace;
+  }
+  const comma = message.match(
+    /(?:^|[^\p{L}])([\p{Lu}][\p{L}'’-]+(?:\s+[\p{Lu}][\p{L}'’-]+){0,2})\s*,\s*(?:woj(?:ewództwo)?\.?\s*)?/u,
+  );
+  return cleanPlaceToken(comma?.[1]);
+}
+
+function cleanPlaceToken(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const cleaned = cleanLocality(value);
+  if (!cleaned || canonicalVoivodeship(cleaned)) {
+    return undefined;
+  }
+  return cleaned;
+}
+
 export function takeNearestRanges(rows: RangePeakDistance[], limit: number): RangePeakDistance[] {
   const capped = Math.max(1, Math.min(MAX_NEARBY_RANGES, limit));
   const best = new Map<string, RangePeakDistance>();
@@ -290,15 +361,50 @@ export function formatNearbyRanges(origin: string, ranges: RangePeakDistance[], 
   };
 }
 
+export function fillDepartureArgs(
+  args: { locality?: unknown; voivodeship?: unknown },
+  departure?: StatedDeparture,
+): { locality?: string; voivodeship?: string } {
+  const locality = readString(args.locality);
+  const voivodeship = readString(args.voivodeship);
+  if (!departure) {
+    return { locality, voivodeship };
+  }
+  if (!locality) {
+    return { locality: departure.locality, voivodeship: voivodeship ?? departure.voivodeship };
+  }
+  if (!voivodeship && normalizePlaceLabel(locality) === normalizePlaceLabel(departure.locality)) {
+    return { locality, voivodeship: departure.voivodeship };
+  }
+  return { locality, voivodeship };
+}
+
+export async function coordinatesForDeparture(
+  departure: StatedDeparture,
+  signal?: AbortSignal,
+): Promise<{ lat: number; lng: number } | undefined> {
+  const place = resolveDeparturePlace(
+    await geocodeLocality(departure.locality, signal),
+    departure.locality,
+    departure.voivodeship,
+  );
+  if (place.kind !== 'ready') {
+    return undefined;
+  }
+  return { lat: place.lat, lng: place.lng };
+}
+
 export async function runSuggestNearbyRanges(
   args: ToolArgs,
   d1: D1Service,
   location: { lat: number; lng: number } | undefined,
   signal?: AbortSignal,
+  departure?: StatedDeparture,
 ): Promise<GuideToolResult> {
   const limit = clampLimit(args.limit);
-  const locality = readString(args.locality);
-  const voivodeship = readString(args.voivodeship);
+  const filled = fillDepartureArgs(args, departure);
+  const locality = filled.locality;
+  const voivodeship = filled.voivodeship;
 
   try {
     if (locality) {

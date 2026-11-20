@@ -4,6 +4,16 @@ export interface GuideToolRequestContext {
     lng: number;
     radiusKm?: number;
   };
+  /** Miejscowość i województwo podane wcześniej w tym wątku. Zostają, dopóki użytkownik nie wskaże innego miejsca. */
+  departure?: {
+    locality: string;
+    voivodeship: string;
+  };
+  /** Współrzędne wyliczone z departure w tym żądaniu, żeby nie geokodować drugi raz. */
+  resolvedDeparture?: {
+    lat: number;
+    lng: number;
+  };
 }
 
 export interface GuideSource {

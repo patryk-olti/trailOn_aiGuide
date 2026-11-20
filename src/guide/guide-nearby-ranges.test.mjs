@@ -7,10 +7,13 @@ import {
   formatAskForOrigin,
   formatNearbyRanges,
   formatNeedVoivodeship,
+  fillDepartureArgs,
+  latestStatedDeparture,
   mentionedVoivodeship,
   messageGivesDeparturePlace,
   messageWantsRangeSuggestion,
   resolveDeparturePlace,
+  statedDepartureFromText,
   takeNearestRanges,
 } from '../../dist/guide/guide-nearby-ranges.js';
 
@@ -134,6 +137,49 @@ test('z wielu szczytów zostają najwyżej 3 najbliższe pasma', () => {
   assert.match(copy.reply, /Turbacz/);
   assert.equal(copy.reply.includes('Rysy'), false);
   assert.match(copy.instruction, /id=a/);
+});
+
+test('miejsce podane w wątku zostaje, dopóki użytkownik nie wskaże innego', () => {
+  assert.deepEqual(statedDepartureFromText('Kraków, woj. małopolskie'), {
+    locality: 'Kraków',
+    voivodeship: 'małopolskie',
+  });
+  assert.deepEqual(statedDepartureFromText('Jadę z Krakowa, małopolskie'), {
+    locality: 'Krakowa',
+    voivodeship: 'małopolskie',
+  });
+  assert.deepEqual(
+    statedDepartureFromText('Liczę od Kraków (woj. małopolskie). Najbliższe pasma:'),
+    { locality: 'Kraków', voivodeship: 'małopolskie' },
+  );
+  assert.equal(statedDepartureFromText('Chcę pojechać w góry, co proponujesz?'), undefined);
+  assert.equal(statedDepartureFromText('Jaka będzie pogoda w weekend?'), undefined);
+
+  const thread = [
+    'Żebym mógł zaproponować pasma, napisz miejscowość i województwo.',
+    'Kraków, woj. małopolskie',
+    'Liczę od Kraków (woj. małopolskie). Najbliższe pasma — Beskid Żywiecki.',
+    'Jaka będzie pogoda w weekend?',
+  ];
+  assert.deepEqual(latestStatedDeparture(thread), {
+    locality: 'Kraków',
+    voivodeship: 'małopolskie',
+  });
+  assert.deepEqual(
+    latestStatedDeparture([...thread, 'Jadę z Zakopanego, małopolskie']),
+    { locality: 'Zakopanego', voivodeship: 'małopolskie' },
+  );
+  assert.deepEqual(
+    fillDepartureArgs({ limit: 3 }, { locality: 'Kraków', voivodeship: 'małopolskie' }),
+    { locality: 'Kraków', voivodeship: 'małopolskie' },
+  );
+  assert.deepEqual(
+    fillDepartureArgs(
+      { locality: 'Zakopane' },
+      { locality: 'Kraków', voivodeship: 'małopolskie' },
+    ),
+    { locality: 'Zakopane', voivodeship: undefined },
+  );
 });
 
 test('wcześniejsza prośba o miejscowość i województwo zostaje w historii', () => {

@@ -14,6 +14,7 @@ import { extractMountainRange, planCatalogPrefetch } from './guide-catalog.prefe
 import {
   assistantAskedForDeparture,
   foldPolish,
+  latestStatedDeparture,
   mentionedVoivodeship,
   messageGivesDeparturePlace,
   messageWantsRangeSuggestion,
@@ -71,11 +72,12 @@ Poza górami:
 Otwarta propozycja wyjazdu, gdy nie pada nazwa pasma:
 - „Chcę pojechać w góry, co proponujesz?”, „gdzie jechać”, „co polecasz w górach” to temat górski.
 - Zanim wymienisz jakiekolwiek pasmo, oprzyj się na suggest_nearby_ranges albo na bloku „Propozycja wyjazdu”, jeśli jest już w kontekście.
-- Narzędzie bierze snapshot GPS z żądania (pole location). Nie wymyślaj współrzędnych.
-- Gdy nie ma GPS, nie proponuj Tatr, Beskidów ani niczego z pamięci. Przekaż prośbę: lokalizacja w TrailOn albo miejscowość i województwo.
+- Narzędzie bierze punkt startu z całego wątku: ostatnia miejscowość z województwem, którą użytkownik podał. GPS z bieżącego żądania (pole location) jest używany tylko wtedy, gdy w wątku nie ma takiej miejscowości. Nie wymyślaj współrzędnych.
+- Gdy w wątku nie ma ani miejscowości z województwem, ani GPS, nie proponuj Tatr, Beskidów ani niczego z pamięci. Przekaż prośbę: lokalizacja w TrailOn albo miejscowość i województwo.
+- Gdy punkt startu jest już w wątku, nie pytaj o niego drugi raz. Zostaje przy kolejnych pytaniach, dopóki użytkownik sam nie wskaże innego miejsca.
 - Gdy użytkownik poda samą miejscowość, dopytaj o województwo. Małe miejscowości powtarzają się w różnych województwach.
 - Wynik to maksymalnie 3 najbliższe pasma i odległość do szczytu w paśmie. Nie dopisuj kolejnych.
-- Gdy użytkownik w kolejnej wiadomości poda miejscowość i województwo, wywołaj suggest_nearby_ranges z locality i voivodeship, nawet jeśli ta wiadomość nie zawiera słowa „góry”.
+- Gdy użytkownik w kolejnej wiadomości poda miejscowość i województwo, wywołaj suggest_nearby_ranges z locality i voivodeship, nawet jeśli ta wiadomość nie zawiera słowa „góry”. W każdej następnej wiadomości tego wątku licz od tego samego miejsca.
 
 Zasady źródeł (obowiązkowe — zawsze w tej kolejności, bez przeskakiwania):
 1. Blogi trailON. To pierwsze źródło. Opis, charakter miejsca i kontekst bierz z sekcji "1. Blogi" oraz z search_materials. Gdy blog pokrywa pytanie, na nim oprzyj odpowiedź i nie szukaj dalej.
@@ -246,15 +248,29 @@ export class GuideService {
     }
 
     const catalogPlan = planCatalogPrefetch(dto.message);
-    const toolContext: GuideToolRequestContext = dto.location
-      ? {
-          location: {
-            lat: dto.location.lat,
-            lng: dto.location.lng,
-            radiusKm: dto.location.radiusKm,
-          },
-        }
-      : {};
+    const standingDeparture = latestStatedDeparture([
+      ...priorTurns.map((turn) => turn.content),
+      dto.message,
+    ]);
+    const toolContext: GuideToolRequestContext = {
+      ...(dto.location
+        ? {
+            location: {
+              lat: dto.location.lat,
+              lng: dto.location.lng,
+              radiusKm: dto.location.radiusKm,
+            },
+          }
+        : {}),
+      ...(standingDeparture ? { departure: standingDeparture } : {}),
+    };
+    if (standingDeparture) {
+      system +=
+        `\n\nPunkt startu tej rozmowy: ${standingDeparture.locality} (woj. ${standingDeparture.voivodeship}). ` +
+        'Użytkownik już go podał w tym wątku. Nie pytaj drugi raz o miejscowość, województwo ani o włączenie lokalizacji. ' +
+        'Przy propozycji pasm, szczytach w pobliżu i pogodzie bez nazwy szczytu licz od tego miejsca, także gdy bieżące żądanie ma osobno GPS. ' +
+        'Inny punkt przyjmuj tylko wtedy, gdy bieżąca wiadomość sama wskaże inną miejscowość.';
+    }
 
     if (catalogPlan) {
       const rangedBlogs = await this.rag.searchByQuery(catalogPlan.materials.query, {
@@ -345,18 +361,25 @@ export class GuideService {
     let suggestionBlock = '';
     if (wantsSuggestion && !continueDeparture) {
       this.throwIfAborted(signal);
+      const suggestionArgs: Record<string, unknown> = { limit: 3 };
+      if (standingDeparture) {
+        suggestionArgs.locality = standingDeparture.locality;
+        suggestionArgs.voivodeship = standingDeparture.voivodeship;
+      }
       yield {
         event: 'status',
         data: {
           phase: 'prefetch',
-          message: dto.location
-            ? 'Szukam najbliższych pasm od Twojej pozycji…'
-            : 'Ustalam, skąd liczyć wyjazd…',
+          message: standingDeparture
+            ? `Szukam najbliższych pasm od ${standingDeparture.locality}…`
+            : dto.location
+              ? 'Szukam najbliższych pasm od Twojej pozycji…'
+              : 'Ustalam, skąd liczyć wyjazd…',
         },
       };
       const suggestion = await this.tools.execute(
         'suggest_nearby_ranges',
-        JSON.stringify({ limit: 3 }),
+        JSON.stringify(suggestionArgs),
         toolContext,
         signal,
       );

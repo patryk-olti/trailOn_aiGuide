@@ -10,7 +10,7 @@ import { RagContentSource, RAG_SOURCE_LOCATIONS } from '../rag/rag.constants';
 import { OpenMeteoService } from '../weather/open-meteo.service';
 import { runGetPeakWeather } from './guide-weather.tool';
 import { LOCATION_REQUIRED_TOOL_RESULT } from './guide-location.messages';
-import { runSuggestNearbyRanges } from './guide-nearby-ranges';
+import { coordinatesForDeparture, runSuggestNearbyRanges } from './guide-nearby-ranges';
 import { formatMountainWebBrief } from './guide-web-search';
 import { LibraryRoutesService } from './library-routes.service';
 import { MOUNTAIN_INDUSTRY_DOMAINS } from './mountain-sources';
@@ -26,7 +26,7 @@ export const GUIDE_TOOLS: ChatCompletionTool[] = [
     function: {
       name: 'suggest_nearby_ranges',
       description:
-        'Gdy użytkownik chce jechać w góry i nie podał pasma, np. „Chcę pojechać w góry, co proponujesz?”. Robi snapshot pozycji: GPS z żądania API (location) albo miejscowość razem z województwem. Zwraca maksymalnie 3 najbliższe pasma i odległość w linii prostej do najbliższego szczytu w każdym. Bez punktu startu nie zgaduj pasm — dopytaj o GPS albo o miejscowość i województwo. Nie podawaj własnych współrzędnych.',
+        'Gdy użytkownik chce jechać w góry i nie podał pasma, np. „Chcę pojechać w góry, co proponujesz?”. Punkt startu: miejscowość i województwo już podane w tym wątku, a gdy ich nie ma — GPS z żądania API (location). Zwraca maksymalnie 3 najbliższe pasma i odległość w linii prostej do najbliższego szczytu w każdym. Nie pytaj drugi raz o miejsce, które użytkownik już podał. Bez punktu startu nie zgaduj pasm. Nie podawaj własnych współrzędnych.',
       parameters: {
         type: 'object',
         properties: {
@@ -197,7 +197,7 @@ export class GuideToolsExecutor {
     }
 
     if (name === 'suggest_nearby_ranges') {
-      return runSuggestNearbyRanges(args, this.d1, request?.location, signal);
+      return runSuggestNearbyRanges(args, this.d1, request?.location, signal, request?.departure);
     }
     if (name === 'search_materials') {
       return this.searchMaterials(args);
@@ -206,10 +206,16 @@ export class GuideToolsExecutor {
       return this.getMaterial(args);
     }
     if (name === 'search_peaks') {
-      return this.searchPeaks(args, request);
+      return this.searchPeaks(args, request, signal);
     }
     if (name === 'get_peak_weather') {
-      return runGetPeakWeather(args, this.d1, this.weather, request?.location);
+      const namesAPeak = Boolean(readString(args.peak_id) || readString(args.peak_name));
+      const hasCoordinates = readFloat(args.lat) !== undefined && readFloat(args.lng) !== undefined;
+      const location =
+        namesAPeak || hasCoordinates
+          ? request?.location
+          : await this.effectiveLocation(request, signal);
+      return runGetPeakWeather(args, this.d1, this.weather, location);
     }
     if (name === 'search_library_routes') {
       return this.searchLibraryRoutes(args);
@@ -377,9 +383,36 @@ export class GuideToolsExecutor {
     };
   }
 
+  private async effectiveLocation(
+    request: GuideToolRequestContext | undefined,
+    signal?: AbortSignal,
+  ): Promise<{ lat: number; lng: number } | undefined> {
+    if (request?.resolvedDeparture) {
+      return request.resolvedDeparture;
+    }
+    if (request?.departure) {
+      try {
+        const point = await coordinatesForDeparture(request.departure, signal);
+        if (point) {
+          request.resolvedDeparture = point;
+          return point;
+        }
+      } catch (error) {
+        if (error instanceof Error && /abort/i.test(error.name)) {
+          throw error;
+        }
+      }
+    }
+    if (request?.location && isValidLatLng(request.location.lat, request.location.lng)) {
+      return { lat: request.location.lat, lng: request.location.lng };
+    }
+    return undefined;
+  }
+
   private async searchPeaks(
     args: ToolArgs,
     request?: GuideToolRequestContext,
+    signal?: AbortSignal,
   ): Promise<GuideToolResult> {
     const table = this.d1.assertTableName(this.d1.peaksTable);
     const limit = clampInt(args.limit, 3, 1, 20);
@@ -412,6 +445,17 @@ export class GuideToolsExecutor {
     const requestedRadius = readFloat(args.radiusKm);
     const wantsNearby =
       requestedRadius !== undefined || toolNearLat !== undefined || toolNearLng !== undefined;
+
+    if (wantsNearby && request?.departure) {
+      const point = await this.effectiveLocation(request, signal);
+      if (point) {
+        request.location = {
+          lat: point.lat,
+          lng: point.lng,
+          radiusKm: request.location?.radiusKm,
+        };
+      }
+    }
 
     const nearLat = toolNearLat ?? request?.location?.lat;
     const nearLng = toolNearLng ?? request?.location?.lng;
