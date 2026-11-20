@@ -16,6 +16,7 @@
     "test:library-routes": "nest build && node --test src/guide/library-routes.test.mjs",
     "test:catalog": "nest build && node --test src/guide/guide-catalog.prefetch.test.mjs",
     "test:web-search": "nest build && node --test src/guide/guide-web-search.test.mjs",
+    "test:nearby-ranges": "nest build && node --test src/guide/guide-nearby-ranges.test.mjs",
     "test:conversation:d1": "node scripts/conversation-d1-smoke.mjs"
   },
   "dependencies": {

@@ -23,6 +23,8 @@ export interface GuideToolResult {
   sourceKeys: string[];
   sources?: GuideSource[];
   peaks?: GuidePeakElevation[];
+  /** Gotowa odpowiedź, gdy model wklei gadkę spoza gór zamiast propozycji pasm. */
+  directReply?: string;
   embeddingCalls?: number;
   usage?: {
     promptTokens: number;

@@ -11,6 +11,13 @@ import { RAG_SOURCE_LOCATIONS } from '../rag/rag.constants';
 import { CreateGuideDto } from './dto/create-guide.dto';
 import { GUIDE_TOOLS, GuideToolsExecutor } from './guide.tools';
 import { extractMountainRange, planCatalogPrefetch } from './guide-catalog.prefetch';
+import {
+  assistantAskedForDeparture,
+  foldPolish,
+  mentionedVoivodeship,
+  messageGivesDeparturePlace,
+  messageWantsRangeSuggestion,
+} from './guide-nearby-ranges';
 import { messageAsksForRoute, messagePlansTrip, routeQueryTokens } from './library-routes';
 import { LibraryRoutesService } from './library-routes.service';
 import {
@@ -43,10 +50,19 @@ Poza górami:
 - Nie odpowiadaj na pytania, które nie dotyczą gór: przepisy kulinarne, polityka, programowanie, praca domowa, plotki, finanse, sporty niegórskie i cała reszta.
 - Nazwa pasma albo szczytu jest tematem górskim, nawet bez słowa „góry” albo „szczyt”. Bieszczady, Tatry, Karkonosze, Beskidy, Pieniny, Góry Świętokrzyskie, Sudety i każda inna nazwa pasma albo szczytu zostają w temacie. „Chcę wyjechać w Bieszczady” to plan wyprawy w to pasmo: najpierw blog, potem szczyty, potem szlaki, a dopytaj tylko o brakujący konkret (dni, kondycja, start).
 - Dojazd w góry, nocleg przy szlaku i ekwipunek na wyjście nadal są tematem górskim. Pytanie w całości o coś innego — nie.
-- Gadki poniżej używaj tylko wtedy, gdy wiadomość nie nazywa pasma, szczytu, szlaku ani wyprawy w góry. Nie uruchamiaj wtedy żadnych narzędzi i nie szukaj w internecie. Nie dawaj częściowej odpowiedzi na meritum.
+- Gadki poniżej używaj tylko wtedy, gdy wiadomość nie nazywa pasma, szczytu, szlaku ani wyprawy w góry. „Chcę pojechać w góry, co proponujesz?” jest wyprawą w góry — nie używaj gadki. Blok „Propozycja wyjazdu” też znaczy, że gadka jest błędem. Przy gadce nie uruchamiaj narzędzi i nie szukaj w internecie. Nie dawaj częściowej odpowiedzi na meritum.
 - Odpowiedz wtedy dokładnie tą gadką, bez dopisków:
 
 „${OFF_TOPIC_REPLY}”
+
+Otwarta propozycja wyjazdu, gdy nie pada nazwa pasma:
+- „Chcę pojechać w góry, co proponujesz?”, „gdzie jechać”, „co polecasz w górach” to temat górski.
+- Zanim wymienisz jakiekolwiek pasmo, oprzyj się na suggest_nearby_ranges albo na bloku „Propozycja wyjazdu”, jeśli jest już w kontekście.
+- Narzędzie bierze snapshot GPS z żądania (pole location). Nie wymyślaj współrzędnych.
+- Gdy nie ma GPS, nie proponuj Tatr, Beskidów ani niczego z pamięci. Przekaż prośbę: lokalizacja w TrailOn albo miejscowość i województwo.
+- Gdy użytkownik poda samą miejscowość, dopytaj o województwo. Małe miejscowości powtarzają się w różnych województwach.
+- Wynik to maksymalnie 3 najbliższe pasma i odległość do szczytu w paśmie. Nie dopisuj kolejnych.
+- Gdy użytkownik w kolejnej wiadomości poda miejscowość i województwo, wywołaj suggest_nearby_ranges z locality i voivodeship, nawet jeśli ta wiadomość nie zawiera słowa „góry”.
 
 Zasady źródeł (obowiązkowe — zawsze w tej kolejności, bez przeskakiwania):
 1. Blogi trailON. To pierwsze źródło. Opis, charakter miejsca i kontekst bierz z sekcji "1. Blogi" oraz z search_materials. Gdy blog pokrywa pytanie, na nim oprzyj odpowiedź i nie szukaj dalej.
@@ -82,8 +98,21 @@ Format odpowiedzi:
 - Nie dodawaj sekcji "Źródła" — serwis doklei ją automatycznie z dokładnych pól url.
 - Gdy odpowiedź już pokrywa pytanie, zakończ na ostatnim fakcie. Nie dopisuj zaproszenia w stylu „Jeśli potrzebujesz więcej informacji lub chcesz zaplanować trasę, daj znać!”. Takie zdanie dodawaj tylko wtedy, gdy do odpowiedzi brakuje konkretu, o który naprawdę trzeba dopytać (który szczyt, który dzień, skąd start).`;
 
+function dropsSuggestedRanges(answer: string, reply: string): boolean {
+  const names = [...reply.matchAll(/\*\*([^*]+)\*\*/g)]
+    .map((match) => match[1]?.trim())
+    .filter((name): name is string => Boolean(name));
+  if (names.length === 0) {
+    return false;
+  }
+  const folded = foldPolish(answer);
+  return !names.some((name) => folded.includes(foldPolish(name)));
+}
+
 function toolStatusMessage(name: string): string {
   switch (name) {
+    case 'suggest_nearby_ranges':
+      return 'Szukam najbliższych pasm…';
     case 'search_peaks':
       return 'Szukam szczytów w katalogu…';
     case 'search_materials':
@@ -260,6 +289,35 @@ export class GuideService {
     const prefetched = [...blogHits, ...trailHits];
 
     const namedRange = extractMountainRange(dto.message);
+    const wantsSuggestion = messageWantsRangeSuggestion(dto.message);
+    const departureVoivodeship = mentionedVoivodeship(dto.message);
+    const priorAskedForDeparture = assistantAskedForDeparture(priorTurns.map((turn) => turn.content));
+    const continueDeparture =
+      departureVoivodeship !== undefined &&
+      (messageGivesDeparturePlace(dto.message) || priorAskedForDeparture);
+    let nearbyFallback: string | undefined;
+    let suggestionBlock = '';
+    if (wantsSuggestion && !continueDeparture) {
+      this.throwIfAborted(signal);
+      yield {
+        event: 'status',
+        data: {
+          phase: 'prefetch',
+          message: dto.location
+            ? 'Szukam najbliższych pasm od Twojej pozycji…'
+            : 'Ustalam, skąd liczyć wyjazd…',
+        },
+      };
+      const suggestion = await this.tools.execute(
+        'suggest_nearby_ranges',
+        JSON.stringify({ limit: 3 }),
+        toolContext,
+        signal,
+      );
+      this.absorbToolResult(sourceIds, resolvedSources, knownPeaks, suggestion);
+      nearbyFallback = suggestion.directReply;
+      suggestionBlock = suggestion.text;
+    }
     const asksForRoute = messageAsksForRoute(dto.message);
     const tripToRange = Boolean(namedRange) && messagePlansTrip(dto.message);
     const routeQuery = asksForRoute ? dto.message : namedRange;
@@ -302,6 +360,17 @@ export class GuideService {
         'Nie używaj gadki o sprawach spoza gór. Odpowiedz najpierw z blogów, potem ze szczytów (nazwa i wysokość), a plan trasy ze szlaków. Dopytaj wyłącznie o brakujący konkret do trasy.';
     }
 
+    if (suggestionBlock) {
+      system +=
+        '\n\nPropozycja wyjazdu — ta wiadomość pyta, dokąd jechać w góry, i nie nazywa pasma. ' +
+        'Nie używaj gadki spoza gór. Nie wymieniaj pasm z sekcji 1–3 ani z pamięci. Odpowiedź bierz wyłącznie stąd:\n' +
+        suggestionBlock;
+    } else if (continueDeparture) {
+      system +=
+        `\n\nUżytkownik podał województwo (${departureVoivodeship}) jako miejsce, skąd jedzie. To ciąg tematu górskiego. ` +
+        'Wywołaj suggest_nearby_ranges z locality i voivodeship z tej wiadomości. Nie wymieniaj pasm, zanim narzędzie nie zwróci odległości. Nie używaj gadki spoza gór.';
+    }
+
     const alreadyCitedBlogs = collectCitedBlogUrls(priorTurns.map((turn) => turn.content));
     if (alreadyCitedBlogs.size > 0) {
       const listed = [...alreadyCitedBlogs].map((url) => `- ${url}`).join('\n');
@@ -335,7 +404,10 @@ export class GuideService {
       let resultModel = latestModel;
       for await (const event of this.openAi.completeStream(messages, {
         tools: GUIDE_TOOLS,
-        toolChoice: 'auto',
+        toolChoice:
+          round === 0 && continueDeparture
+            ? { type: 'function', function: { name: 'suggest_nearby_ranges' } }
+            : 'auto',
         maxCompletionTokens: this.maxCompletionTokens,
         temperature: 0.3,
         signal,
@@ -397,6 +469,9 @@ export class GuideService {
             }
           }
           this.absorbToolResult(sourceIds, resolvedSources, knownPeaks, toolResult);
+          if (call.name === 'suggest_nearby_ranges' && toolResult.directReply) {
+            nearbyFallback = toolResult.directReply;
+          }
           messages.push({
             role: 'tool',
             tool_call_id: call.id,
@@ -416,7 +491,13 @@ export class GuideService {
 
     if (!finalText) {
       finalText =
+        nearbyFallback ??
         'Nie udało się przygotować odpowiedzi. Spróbuj przeformułować pytanie lub zawęzić temat.';
+    } else if (
+      nearbyFallback &&
+      (finalText.includes('W innych sprawach nie wchodzę') || dropsSuggestedRanges(finalText, nearbyFallback))
+    ) {
+      finalText = nearbyFallback;
     }
 
     const sources = this.omitRepeatedBlogSources(

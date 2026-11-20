@@ -10,6 +10,7 @@ import { RagContentSource, RAG_SOURCE_LOCATIONS } from '../rag/rag.constants';
 import { OpenMeteoService } from '../weather/open-meteo.service';
 import { runGetPeakWeather } from './guide-weather.tool';
 import { LOCATION_REQUIRED_TOOL_RESULT } from './guide-location.messages';
+import { runSuggestNearbyRanges } from './guide-nearby-ranges';
 import { formatMountainWebBrief } from './guide-web-search';
 import { LibraryRoutesService } from './library-routes.service';
 import { MOUNTAIN_INDUSTRY_DOMAINS } from './mountain-sources';
@@ -19,6 +20,30 @@ const DEFAULT_NEARBY_RADIUS_KM = 100;
 const EARTH_RADIUS_KM = 6371;
 
 export const GUIDE_TOOLS: ChatCompletionTool[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'suggest_nearby_ranges',
+      description:
+        'Gdy użytkownik chce jechać w góry i nie podał pasma, np. „Chcę pojechać w góry, co proponujesz?”. Robi snapshot pozycji: GPS z żądania API (location) albo miejscowość razem z województwem. Zwraca maksymalnie 3 najbliższe pasma i odległość w linii prostej do najbliższego szczytu w każdym. Bez punktu startu nie zgaduj pasm — dopytaj o GPS albo o miejscowość i województwo. Nie podawaj własnych współrzędnych.',
+      parameters: {
+        type: 'object',
+        properties: {
+          locality: {
+            type: 'string',
+            description: 'Miejscowość w mianowniku, gdy użytkownik nie korzysta z GPS. Np. „Kraków”, nie „z Krakowa”. Bez województwa w tym polu.',
+          },
+          voivodeship: {
+            type: 'string',
+            description:
+              'Województwo tej miejscowości. Wymagane razem z locality — ta sama nazwa bywa w kilku województwach.',
+          },
+          limit: { type: 'integer', minimum: 1, maximum: 3, description: 'Ile pasm podać. Domyślnie 3.' },
+        },
+        additionalProperties: false,
+      },
+    },
+  },
   {
     type: 'function',
     function: {
@@ -170,6 +195,9 @@ export class GuideToolsExecutor {
       return { text: 'Nie udało się odczytać argumentów narzędzia.', sourceKeys: [] };
     }
 
+    if (name === 'suggest_nearby_ranges') {
+      return runSuggestNearbyRanges(args, this.d1, request?.location, signal);
+    }
     if (name === 'search_materials') {
       return this.searchMaterials(args);
     }

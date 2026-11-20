@@ -31,7 +31,7 @@ export interface TokenUsage {
 
 export interface CompletionOptions {
   tools?: ChatCompletionTool[];
-  toolChoice?: 'auto' | 'none';
+  toolChoice?: 'auto' | 'none' | { type: 'function'; function: { name: string } };
   maxCompletionTokens?: number;
   temperature?: number;
   signal?: AbortSignal;
