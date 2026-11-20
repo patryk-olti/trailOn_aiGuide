@@ -14,6 +14,7 @@ import { planCatalogPrefetch } from './guide-catalog.prefetch';
 import { messageAsksForRoute, routeQueryTokens } from './library-routes';
 import { LibraryRoutesService } from './library-routes.service';
 import {
+  annotatePeakElevations,
   blogUrlKey,
   buildUrlTitleMap,
   collectCitedBlogUrls,
@@ -23,10 +24,27 @@ import {
   suppressRepeatedBlogLinks,
   trailonGuideAnchor,
 } from './guide-response-html';
-import { GuideSource, GuideStreamEvent, GuideToolRequestContext, GuideUsage } from './guide.types';
+import {
+  GuidePeakElevation,
+  GuideSource,
+  GuideStreamEvent,
+  GuideToolRequestContext,
+  GuideUsage,
+} from './guide.types';
 
-const SYSTEM_PROMPT = `Jesteś przewodnikiem AI TrailOn. Pomagasz układać trasy i korzystasz z materiałów zespołu trailON (blog, biblioteka tras, szlaki długodystansowe) oraz katalogu szczytów w Cloudflare D1.
-Odpowiadaj po polsku, konkretnie i praktycznie. Uwzględniaj bezpieczeństwo i realia terenu.
+const OFF_TOPIC_REPLY =
+  'Hej, jestem prywatnym przewodnikiem górskim — pomagam przy górach: szlakach, szczytach, pogodzie na trasie i tym, jak iść bezpiecznie. W innych sprawach nie wchodzę, bo to nie moja działka. Jak będziesz chciał ruszyć w góry, jestem: ułożymy trasę albo sprawdzimy, co dzieje się na szlaku.';
+
+const SYSTEM_PROMPT = `Jesteś prywatnym przewodnikiem górskim trailON. Wspomagasz wyłącznie tematykę górską i korzystasz z materiałów zespołu trailON (blog, biblioteka tras, szlaki długodystansowe) oraz katalogu szczytów w Cloudflare D1.
+Odpowiadaj po polsku, ciepło i po ludzku, ale konkretnie. Uwzględniaj bezpieczeństwo i realia terenu.
+
+Poza górami:
+- Nie odpowiadaj na pytania, które nie dotyczą gór: przepisy kulinarne, polityka, programowanie, praca domowa, plotki, finanse, sporty niegórskie i cała reszta.
+- Dojazd w góry, nocleg przy szlaku i ekwipunek na wyjście nadal są tematem górskim. Pytanie w całości o coś innego — nie.
+- Nie uruchamiaj wtedy żadnych narzędzi i nie szukaj w internecie. Nie dawaj częściowej odpowiedzi na meritum.
+- Odpowiedz dokładnie tą gadką, bez dopisków:
+
+„${OFF_TOPIC_REPLY}”
 
 Zasady źródeł (obowiązkowe):
 - O szczytach i pasmach odpowiadaj WYŁĄCZNIE na podstawie: sekcji "Najbardziej pasujące materiały", "Dane z katalogu (prefetch)" oraz wyników narzędzi search_peaks i search_materials.
@@ -34,18 +52,25 @@ Zasady źródeł (obowiązkowe):
 - Każdą propozycję z biblioteki podaj z nazwą, pasmem, długością, trudnością i adresem url skopiowanym dosłownie. Nie wymyślaj innych tras ani linków. Gdy wynik jest pusty, napisz że w bibliotece nie ma pasującej trasy.
 - Gdy w pytaniu pada pasmo lub szczyty, najpierw korzystaj z tych danych; nie twórz listy szczytów z ogólnej wiedzy modelu.
 - W odpowiedzi domyślnie wymieniaj MAKSYMALNIE 3 szczyty. Jeśli użytkownik wyraźnie prosi o większą liczbę (np. „wymień 5 szczytów”), możesz podać więcej i dopasować limit w search_peaks.
+- Przy każdej nazwie szczytu dopisz wysokość w nawiasach, zaraz po nazwie: „Małołączniak (2020 m.n.p.m.)”. Jednostka zawsze w zapisie „m.n.p.m.”. Wysokość bierz z katalogu albo z materiałów. Jeśli przy tej nazwie jest już taka wysokość, nie dopisuj drugiej.
 - Jeśli do szczytu jest wpis blogowy (R2, np. blog/szrenica.json), opisuj szczyt głównie z jego zajawki i kontentu; katalog D1 traktuj jako uzupełnienie (wysokość, pasmo).
 - Adres bloga wstaw tylko wtedy, gdy w linii tego samego szczytu jest pole „url bloga”. Zapisz go w osobnej linii jako „Link do bloga: ” i doklej adres 1:1. Nie pisz „URL:”.
 - Gdy linia ma „brak potwierdzonego url bloga” albo nie ma pola url — wymień szczyt z katalogu (nazwa, wysokość, pasmo, opis) i napisz, że brak wpisu blogowego. Nie wstawiaj wtedy żadnego linku.
 - Nie składaj adresu z nazwy szczytu i nie podstawiaj URL innego wpisu, nawet jeśli leży obok w materiałach albo jest podobny tematycznie. Niepewny adres pomiń.
 - Dany adres bloga wstaw w rozmowie tylko raz. Jeśli ten sam URL (ten sam szczyt / ten sam wpis) był już w wcześniejszej odpowiedzi, nie wklejaj go ponownie — odpowiedz bez linku. Inny szczyt, z innym adresem, linkuj normalnie przy pierwszej wzmiance.
-- Jeśli po narzędziach i prefetch brak wpisów — powiedz to wprost; nie uzupełniaj odpowiedzi z pamięci modelu.
+- Szczytów, wysokości, tras i linków nie uzupełniaj z pamięci modelu. Gdy brakuje aktualnej informacji górskiej, której nie ma w materiałach trailON (zamknięcie szlaku, lawiny, komunikat parku albo służb, ostrzeżenie meteorologiczne), wywołaj search_web.
+Wyszukiwanie w sieci (search_web):
+- Wołaj je tylko przy pytaniu górskim i tylko wtedy, gdy katalog, blog, biblioteka tras i pogoda nie dają odpowiedzi.
+- Wynik pochodzi wyłącznie ze źródeł branżowych: TOPR, GOPR, parki narodowe, PTTK, PZA, IMGW oraz służby górskie po słowackiej i czeskiej stronie Tatr i Karkonoszy.
+- Przepisz użytkownikowi tylko fakty z wyniku narzędzia. Adres podaj 1:1, w osobnej linii: „Źródło: NAZWA — URL”.
+- Nie dodawaj stron spoza wyniku. search_web nie zastępuje katalogu przy liście szczytów i wysokościach. Gdy narzędzie zwróci brak danych, powiedz wprost, że nie masz potwierdzonej informacji. Nie zgaduj.
 Pogoda:
 - Na pytania o pogodę, wiatr, temperaturę na szczycie lub „na weekend” wywołaj get_peak_weather (najpierw search_peaks jeśli nie masz peak_id).
 - scope=weekend gdy użytkownik pyta o sobotę, niedzielę lub wyjazd na weekend; w przeciwnym razie scope=current.
 - Opisuj wyłącznie dane z narzędzia (Open-Meteo); nie zgaduj prognozy z pamięci modelu.
 - Jeśli get_peak_weather nie poda pogody, nie wymyślaj prognozy. Dopytaj użytkownika o szczyt z listy w wyniku narzędzia: tylko szczyty w promieniu maksymalnie 5 km od jego punktu, do których da się odnieść pogodę. Nie proponuj szczytów dalej i nie poszerzaj promienia.
 Format odpowiedzi:
+- Nazwę szczytu zapisuj razem z wysokością: „Małołączniak (2020 m.n.p.m.)”.
 - Nie używaj HTML w treści. Zwróć zwykły tekst z akapitami (puste linie) i listami w formie myślników.
 - Sekcje i wyróżnienia oznaczaj jako **Nazwa sekcji** (podwójne gwiazdki) — serwis zamieni to na pogrubienie w HTML.
 - Nie dodawaj sekcji "Źródła" — serwis doklei ją automatycznie z dokładnych pól url.`;
@@ -62,6 +87,8 @@ function toolStatusMessage(name: string): string {
       return 'Sprawdzam pogodę…';
     case 'search_library_routes':
       return 'Szukam tras w bibliotece…';
+    case 'search_web':
+      return 'Sprawdzam komunikaty służb górskich…';
     default:
       return 'Zbieram dane…';
   }
@@ -99,7 +126,7 @@ export class GuideService {
     this.maxCompletionTokens = config.getOrThrow<number>('RAG_MAX_COMPLETION_TOKENS');
     this.prefetchLimit = config.getOrThrow<number>('RAG_PREFETCH_LIMIT');
     this.defaultModel = config.getOrThrow<string>('OPENAI_MODEL');
-    this.tools = new GuideToolsExecutor(rag, d1, openMeteo, libraryRoutes);
+    this.tools = new GuideToolsExecutor(rag, d1, openMeteo, libraryRoutes, openAi);
   }
 
   async *replyStream(dto: CreateGuideDto, signal?: AbortSignal): AsyncGenerator<GuideStreamEvent> {
@@ -125,6 +152,7 @@ export class GuideService {
     };
     const sourceIds = new Set<string>();
     const resolvedSources = new Map<string, GuideSource>();
+    const knownPeaks: GuidePeakElevation[] = [];
     const prefetched = await this.rag.searchByQuery(dto.message, {
       limit: this.prefetchLimit,
       sources: ['blog', 'biblioteka-tras', 'szlaki-dlugodystansowe'],
@@ -183,7 +211,7 @@ export class GuideService {
             toolContext,
           );
           usage.embeddingCalls += peakResult.embeddingCalls ?? 0;
-          this.absorbToolResult(sourceIds, resolvedSources, peakResult);
+          this.absorbToolResult(sourceIds, resolvedSources, knownPeaks, peakResult);
           catalogParts.push(`Katalog szczytów (D1):\n${peakResult.text}`);
         }
       }
@@ -196,7 +224,7 @@ export class GuideService {
         toolContext,
       );
       usage.embeddingCalls += 1;
-      this.absorbToolResult(sourceIds, resolvedSources, materialResult);
+      this.absorbToolResult(sourceIds, resolvedSources, knownPeaks, materialResult);
       catalogParts.push(`Materiały trailON (blog / trasy):\n${materialResult.text}`);
       system += `\n\nDane z katalogu (prefetch — użyj ich w pierwszej kolejności w odpowiedzi):\n${catalogParts.join('\n\n')}`;
     }
@@ -207,7 +235,7 @@ export class GuideService {
         JSON.stringify({ query: dto.message, limit: 3 }),
         toolContext,
       );
-      this.absorbToolResult(sourceIds, resolvedSources, routeResult);
+      this.absorbToolResult(sourceIds, resolvedSources, knownPeaks, routeResult);
       system += `\n\nBiblioteka tras (prefetch — te propozycje podaj użytkownikowi):\n${routeResult.text}`;
     }
 
@@ -284,14 +312,15 @@ export class GuideService {
             event: 'status',
             data: { phase: 'tool', name: call.name, message: toolStatusMessage(call.name) },
           };
-          const toolResult = await this.tools.execute(call.name, call.arguments, toolContext);
+          const toolResult = await this.tools.execute(call.name, call.arguments, toolContext, signal);
+          this.mergeUsage(usage, toolResult.usage);
           if (call.name === 'search_materials' || call.name === 'get_material') {
             usage.embeddingCalls += 1;
           }
           if (call.name === 'search_peaks') {
             usage.embeddingCalls += toolResult.embeddingCalls ?? 0;
           }
-          this.absorbToolResult(sourceIds, resolvedSources, toolResult);
+          this.absorbToolResult(sourceIds, resolvedSources, knownPeaks, toolResult);
           messages.push({
             role: 'tool',
             tool_call_id: call.id,
@@ -315,6 +344,7 @@ export class GuideService {
       this.buildSources([...sourceIds], prefetched, resolvedSources),
       alreadyCitedBlogs,
     );
+    finalText = annotatePeakElevations(finalText, knownPeaks);
     finalText = stripMismatchedPeakBlogUrls(finalText, peakBlogBindings(sources));
     finalText = suppressRepeatedBlogLinks(finalText, alreadyCitedBlogs);
 
@@ -442,10 +472,14 @@ export class GuideService {
   private absorbToolResult(
     sourceIds: Set<string>,
     resolvedSources: Map<string, GuideSource>,
-    toolResult: { sourceKeys: string[]; sources?: GuideSource[]; embeddingCalls?: number },
+    knownPeaks: GuidePeakElevation[],
+    toolResult: { sourceKeys: string[]; sources?: GuideSource[]; peaks?: GuidePeakElevation[]; embeddingCalls?: number },
   ): void {
     for (const key of toolResult.sourceKeys) {
       sourceIds.add(key);
+    }
+    for (const peak of toolResult.peaks ?? []) {
+      knownPeaks.push(peak);
     }
     for (const source of toolResult.sources ?? []) {
       const mapKey = isPeakSourceLabel(source.source) ? `peak:${source.id}` : source.id;

@@ -1,5 +1,6 @@
 import type { ChatCompletionTool } from 'openai/resources/chat/completions';
 import { D1Service } from '../cloudflare/d1.service';
+import { OpenAiService } from '../openai/openai.service';
 import { PeakRow } from '../cloudflare/d1.types';
 import { BlogPostRef, blogIdentityMatchesPeak } from '../rag/rag-blog-lookup';
 import { RagIndexService } from '../rag/rag-index.service';
@@ -8,7 +9,9 @@ import { RagContentSource, RAG_SOURCE_LOCATIONS } from '../rag/rag.constants';
 import { OpenMeteoService } from '../weather/open-meteo.service';
 import { runGetPeakWeather } from './guide-weather.tool';
 import { LOCATION_REQUIRED_TOOL_RESULT } from './guide-location.messages';
+import { formatMountainWebBrief } from './guide-web-search';
 import { LibraryRoutesService } from './library-routes.service';
+import { MOUNTAIN_INDUSTRY_DOMAINS } from './mountain-sources';
 import { GuideSource, GuideToolRequestContext, GuideToolResult } from './guide.types';
 
 const DEFAULT_NEARBY_RADIUS_KM = 100;
@@ -120,6 +123,26 @@ export const GUIDE_TOOLS: ChatCompletionTool[] = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'search_web',
+      description:
+        'Szuka w internecie aktualnych faktów górskich, których nie ma w materiałach trailON: komunikaty turystyczne, zamknięcia szlaków, lawiny, przepisy parków, ostrzeżenia TOPR, GOPR, IMGW i parków narodowych. Wynik pochodzi tylko ze źródeł branżowych. Nie używaj do list szczytów, wysokości, tras z biblioteki ani do pytań spoza gór.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description:
+              'Konkretne pytanie górskie po polsku, np. „komunikat turystyczny TPN Tatry” albo „zagrożenie lawinowe TOPR”.',
+          },
+        },
+        required: ['query'],
+        additionalProperties: false,
+      },
+    },
+  },
 ];
 
 type ToolArgs = Record<string, unknown>;
@@ -130,12 +153,14 @@ export class GuideToolsExecutor {
     private readonly d1: D1Service,
     private readonly weather: OpenMeteoService,
     private readonly libraryRoutes: LibraryRoutesService,
+    private readonly web: OpenAiService,
   ) {}
 
   async execute(
     name: string,
     rawArguments: string,
     request?: GuideToolRequestContext,
+    signal?: AbortSignal,
   ): Promise<GuideToolResult> {
     let args: ToolArgs = {};
     try {
@@ -159,7 +184,35 @@ export class GuideToolsExecutor {
     if (name === 'search_library_routes') {
       return this.searchLibraryRoutes(args);
     }
+    if (name === 'search_web') {
+      return this.searchWeb(args, signal);
+    }
     return { text: `Nieznane narzędzie: ${name}`, sourceKeys: [] };
+  }
+
+  private async searchWeb(args: ToolArgs, signal?: AbortSignal): Promise<GuideToolResult> {
+    const query = readString(args.query);
+    if (!query) {
+      return { text: 'Podaj pytanie górskie do wyszukania w źródłach branżowych.', sourceKeys: [] };
+    }
+    try {
+      const found = await this.web.searchWeb(query.slice(0, 400), MOUNTAIN_INDUSTRY_DOMAINS, signal);
+      const brief = formatMountainWebBrief(found.text, found.hits);
+      return {
+        text: brief.text,
+        sourceKeys: brief.sources.map((source) => source.id),
+        sources: brief.sources,
+        usage: found.usage,
+      };
+    } catch (error) {
+      if (error instanceof Error && /abort/i.test(error.name)) {
+        throw error;
+      }
+      return {
+        text: 'Nie udało się sprawdzić źródeł branżowych. Powiedz użytkownikowi, że nie masz teraz potwierdzonej informacji. Nie zgaduj.',
+        sourceKeys: [],
+      };
+    }
   }
 
   private async searchLibraryRoutes(args: ToolArgs): Promise<GuideToolResult> {
@@ -409,13 +462,14 @@ export class GuideToolsExecutor {
         ? ` | url bloga (w odpowiedzi napisz „Link do bloga: ${blogUrl}”, adres kopiuj 1:1)`
         : ' | brak potwierdzonego url bloga — nie podawaj linku';
       lines.push(
-        `${row.name} (${row.elevation_m} m, ${row.range_name}${distance}) | id=${row.peak_id}${blogPart}\nKatalog D1: ${description}${blogExcerpt}`,
+        `${row.name} (${row.elevation_m} m.n.p.m.) | pasmo: ${row.range_name}${distance} | id=${row.peak_id}${blogPart}\nKatalog D1: ${description}${blogExcerpt}`,
       );
     }
     return {
       text: truncate(lines.join('\n\n'), RAG_MAX_TOOL_TEXT_CHARS),
       sourceKeys,
       sources,
+      peaks: rows.map((row) => ({ name: row.name, elevationM: row.elevation_m })),
     };
   }
 

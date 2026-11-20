@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  annotatePeakElevations,
   collectCitedBlogUrls,
   plainTextToGuideHtml,
   presentBlogLinkLine,
@@ -115,6 +116,40 @@ test('adres wpisu jest opisany jako link do bloga', () => {
   assert.match(html, /Link do bloga: <a href="https:\/\/trailon\.pl\/przewodnik\/karkonosze\/sniezka"/);
   assert.match(html, />Śnieżka<\/a>/);
   assert.equal(html.includes('URL:'), false);
+});
+
+test('przy nazwie szczytu dopisuje wysokość w nawiasach', () => {
+  const peaks = [
+    { name: 'Małołączniak', elevationM: 2096 },
+    { name: 'Babia Góra', elevationM: 1725 },
+    { name: 'Babia', elevationM: 1000 },
+  ];
+  assert.equal(
+    annotatePeakElevations('Wejdź na Małołączniak od strony Doliny.', peaks),
+    'Wejdź na Małołączniak (2096 m.n.p.m.) od strony Doliny.',
+  );
+  assert.equal(
+    annotatePeakElevations('Małołączniak (2096 m, Czerwone Wierchy) i Babia Góra — 1725 m n.p.m.', peaks),
+    'Małołączniak (2096 m.n.p.m.) i Babia Góra (1725 m.n.p.m.)',
+  );
+  assert.equal(
+    annotatePeakElevations('Ze szlaku na Małołączniaka.', peaks),
+    'Ze szlaku na Małołączniaka (2096 m.n.p.m.).',
+  );
+  assert.equal(
+    annotatePeakElevations('**Małołączniak** jest blisko.', peaks),
+    '**Małołączniak (2096 m.n.p.m.)** jest blisko.',
+  );
+  assert.equal(
+    annotatePeakElevations('Małołączniak (2096 m.n.p.m.) został.', peaks),
+    'Małołączniak (2096 m.n.p.m.) został.',
+  );
+  const url = 'https://trailon.pl/przewodnik/tatry/Małołączniak';
+  assert.equal(annotatePeakElevations(`Opis: ${url}.`, peaks), `Opis: ${url}.`);
+  assert.equal(
+    annotatePeakElevations('Małołączniakowy grzbiet.', peaks),
+    'Małołączniakowy grzbiet.',
+  );
 });
 
 test('link do trasy nie jest traktowany jak blog', () => {

@@ -13,11 +13,22 @@ export interface GuideSource {
   url?: string;
 }
 
+export interface GuidePeakElevation {
+  name: string;
+  elevationM: number;
+}
+
 export interface GuideToolResult {
   text: string;
   sourceKeys: string[];
   sources?: GuideSource[];
+  peaks?: GuidePeakElevation[];
   embeddingCalls?: number;
+  usage?: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+  };
 }
 
 export interface GuideUsage {

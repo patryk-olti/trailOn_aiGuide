@@ -4,7 +4,7 @@ import { PeakRow } from '../cloudflare/d1.types';
 import { OpenMeteoService } from '../weather/open-meteo.service';
 import { PeakWeatherSnapshot, WeatherScope } from '../weather/open-meteo.types';
 import { weatherCodeLabelPl } from '../weather/weather-code.pl';
-import { GuideToolResult } from './guide.types';
+import { GuidePeakElevation, GuideToolResult } from './guide.types';
 
 type ToolArgs = Record<string, unknown>;
 
@@ -34,6 +34,7 @@ export async function runGetPeakWeather(
 
   let peakLabel = '';
   let latLng: { lat: number; lng: number } | undefined;
+  let resolvedPeaks: GuidePeakElevation[] = [];
 
   if (peakId) {
     const peak = await findPeakById(d1, peakId);
@@ -50,10 +51,12 @@ export async function runGetPeakWeather(
         d1,
         location,
         `Szczyt ${peak.name} nie ma współrzędnych w katalogu — nie da się pobrać pogody Open-Meteo.`,
+        asElevations([peak]),
       );
     }
     latLng = coords;
     peakLabel = formatPeakLabel(peak);
+    resolvedPeaks = asElevations([peak]);
   } else if (peakName) {
     const matches = await findPeaksByName(d1, peakName, 5);
     if (matches.length === 0) {
@@ -69,13 +72,15 @@ export async function runGetPeakWeather(
         d1,
         location,
         `Znaleziono „${peakName}", ale brak współrzędnych w katalogu D1.`,
+        asElevations(matches),
       );
     }
     const chosen = withCoords[0]!;
+    resolvedPeaks = asElevations(withCoords);
     if (withCoords.length > 1) {
       const others = withCoords
         .slice(1, 4)
-        .map((p) => `${p.name} (${p.range_name}, id=${p.peak_id})`)
+        .map((p) => `${p.name} (${p.elevation_m} m.n.p.m., ${p.range_name}, id=${p.peak_id})`)
         .join('; ');
       peakLabel = `${formatPeakLabel(chosen)} | Uwaga: inne trafienia: ${others}`;
     } else {
@@ -99,7 +104,7 @@ export async function runGetPeakWeather(
   try {
     const snapshot = await weather.getWeather(latLng.lat, latLng.lng, scope);
     const text = formatWeatherText(peakLabel, snapshot, scope);
-    return { text, sourceKeys: [] };
+    return { text, sourceKeys: [], peaks: resolvedPeaks };
   } catch (error) {
     const detail =
       error instanceof ServiceUnavailableException
@@ -110,6 +115,7 @@ export async function runGetPeakWeather(
     return {
       text: `Nie udało się pobrać pogody (Open-Meteo, jak w aplikacji TrailOn): ${detail}`,
       sourceKeys: [],
+      peaks: resolvedPeaks,
     };
   }
 }
@@ -148,7 +154,7 @@ export function formatUnansweredWeather(reason: string, nearby: NearbyPeak[] | u
   }
   const lines = nearby.map((peak) => {
     const distance = Number.isFinite(peak.distance_km) ? `${peak.distance_km.toFixed(1)} km` : 'w promieniu 5 km';
-    return `- ${peak.name} (${peak.elevation_m} m, ${peak.range_name}, ${distance}, id=${peak.peak_id})`;
+    return `- ${peak.name} (${peak.elevation_m} m.n.p.m.) | pasmo: ${peak.range_name} | ${distance} | id=${peak.peak_id}`;
   });
   return (
     `${head} Dopytaj użytkownika, o który z tych szczytów chodzi. ` +
@@ -162,9 +168,18 @@ async function unansweredWeather(
   d1: D1Service,
   location: WeatherUserPoint | undefined,
   reason: string,
+  peaks: GuidePeakElevation[] = [],
 ): Promise<GuideToolResult> {
   const nearby = await nearbyPeaksForWeather(d1, location);
-  return { text: formatUnansweredWeather(reason, nearby), sourceKeys: [] };
+  return {
+    text: formatUnansweredWeather(reason, nearby),
+    sourceKeys: [],
+    peaks: [...peaks, ...asElevations(nearby ?? [])],
+  };
+}
+
+function asElevations(peaks: Array<{ name: string; elevation_m: number }>): GuidePeakElevation[] {
+  return peaks.map((peak) => ({ name: peak.name, elevationM: peak.elevation_m }));
 }
 
 async function nearbyPeaksForWeather(
@@ -205,7 +220,7 @@ async function nearbyPeaksForWeather(
 }
 
 function formatPeakLabel(peak: PeakRow): string {
-  return `${peak.name} (${peak.elevation_m} m, ${peak.range_name}, id=${peak.peak_id})`;
+  return `${peak.name} (${peak.elevation_m} m.n.p.m.) | pasmo: ${peak.range_name} | id=${peak.peak_id}`;
 }
 
 async function findPeakById(d1: D1Service, peakId: string): Promise<PeakRow | undefined> {

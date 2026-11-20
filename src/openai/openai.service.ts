@@ -13,6 +13,7 @@ import {
   EmbedOptions,
   TokenUsage,
   ToolCall,
+  WebSearchResult,
 } from './openai.types';
 
 @Injectable()
@@ -117,6 +118,54 @@ export class OpenAiService {
     }
   }
 
+  async searchWeb(
+    query: string,
+    allowedDomains: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<WebSearchResult> {
+    try {
+      const response = await this.client.responses.create(
+        {
+          model: this.model,
+          instructions:
+            'Jesteś wyszukiwarką prywatnego przewodnika górskiego. ' +
+            'Szukaj wyłącznie aktualnych faktów górskich: komunikatów turystycznych, zamknięć szlaków, zagrożenia lawinowego, przepisów parków i ostrzeżeń służb. ' +
+            'Odpowiedz po polsku, krótko, tylko tym, co jest w wynikach wyszukiwania. ' +
+            'Nie dopowiadaj z pamięci. Gdy wyników brak, odpowiedz dokładnie: BRAK_DANYCH.',
+          input: query,
+          tools: [
+            {
+              type: 'web_search',
+              search_context_size: 'low',
+              external_web_access: true,
+              filters: { allowed_domains: [...allowedDomains] },
+              user_location: {
+                type: 'approximate',
+                country: 'PL',
+                timezone: 'Europe/Warsaw',
+              },
+            },
+          ],
+          tool_choice: 'required',
+          max_output_tokens: 500,
+        },
+        { signal },
+      );
+      return {
+        text: response.output_text ?? '',
+        hits: collectUrlCitations(response.output),
+        usage: readResponseUsage(response.usage),
+      };
+    } catch (error) {
+      if (isAbortError(error)) {
+        throw error;
+      }
+      const detail = error instanceof Error ? error.message : 'Unknown OpenAI error';
+      this.logger.error(detail);
+      throw new BadGatewayException('OpenAI web search failed');
+    }
+  }
+
   async embed(texts: string[], options?: EmbedOptions): Promise<number[][]> {
     if (texts.length === 0) {
       return [];
@@ -202,4 +251,40 @@ export class OpenAiService {
 
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && /abort/i.test(error.name);
+}
+
+function collectUrlCitations(
+  output: OpenAI.Responses.Response['output'],
+): WebSearchResult['hits'] {
+  const hits: WebSearchResult['hits'] = [];
+  for (const item of output) {
+    if (item.type !== 'message') {
+      continue;
+    }
+    for (const part of item.content) {
+      if (part.type !== 'output_text') {
+        continue;
+      }
+      for (const annotation of part.annotations) {
+        if (annotation.type !== 'url_citation' || !annotation.url) {
+          continue;
+        }
+        hits.push({ title: annotation.title ?? '', url: annotation.url });
+      }
+    }
+  }
+  return hits;
+}
+
+function readResponseUsage(
+  usage: OpenAI.Responses.ResponseUsage | undefined,
+): TokenUsage | undefined {
+  if (!usage) {
+    return undefined;
+  }
+  return {
+    promptTokens: usage.input_tokens,
+    completionTokens: usage.output_tokens,
+    totalTokens: usage.total_tokens,
+  };
 }

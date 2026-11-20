@@ -1,5 +1,6 @@
 import { normalizePeakName } from '../rag/rag-blog-lookup';
-import { GuideSource } from './guide.types';
+import { GuidePeakElevation, GuideSource } from './guide.types';
+import { industrySourceLabel, isMountainIndustryUrl, mountainIndustryUrlSource } from './mountain-sources';
 
 /** Kolor jak przycisk „Współpracuj z nami” / filtry na trailon.pl (rgb(254, 95, 0)). */
 export const TRAILON_GUIDE_LINK_COLOR = '#FE5F00';
@@ -8,6 +9,14 @@ const TRAILON_URL_PATTERN = /https:\/\/trailon\.pl\/[^\s<>"')\]]+/gi;
 
 function trimUrlTrailingPunctuation(url: string): { href: string; suffix: string } {
   const match = /^(https:\/\/trailon\.pl\/[^\s<>"')\]]+?)([),.;:!?]+)?$/.exec(url);
+  if (!match) {
+    return { href: url, suffix: '' };
+  }
+  return { href: match[1] ?? url, suffix: match[2] ?? '' };
+}
+
+function trimGenericHttpsUrl(url: string): { href: string; suffix: string } {
+  const match = /^(https:\/\/[^\s<>"')\]]+?)([),.;:!?]+)?$/.exec(url);
   if (!match) {
     return { href: url, suffix: '' };
   }
@@ -204,11 +213,149 @@ function lineMentionsPeak(line: string, name: string): boolean {
   return false;
 }
 
+const PAREN_ELEVATION =
+  /^\s*\(\s*\d{2,4}\s*m(?:\s*\.?\s*n\s*\.?\s*p\s*\.?\s*m\s*\.?)?(?:\s*[,;]\s*[^)\n]{0,80})?\s*\)/i;
+const DASH_ELEVATION =
+  /^\s*[—–-]\s*\d{2,4}\s*m(?:\s*\.?\s*n\s*\.?\s*p\s*\.?\s*m\s*\.?)?(?=\s|$|[,.;])/i;
+const BARE_ELEVATION =
+  /^\s*,?\s+\d{2,4}\s*m(?:\s*\.?\s*n\s*\.?\s*p\s*\.?\s*m\s*\.?)?(?=\s|$|[,.;])/i;
+const INFLECTION_SUFFIXES = ['iem', 'owi', 'ach', 'ami', 'em', 'ie', 'om', 'ów', 'ą', 'ę', 'a', 'u', 'e', 'y', 'i', ''];
+
+/**
+ * Dopisuje wysokość przy nazwie szczytu: „Małołączniak (2020 m.n.p.m.)”.
+ * Istniejący nawias albo zapis metrów tuż przy nazwie jest zastępowany tą formą.
+ */
+export function annotatePeakElevations(text: string, peaks: readonly GuidePeakElevation[]): string {
+  const prepared = preparePeakElevations(peaks);
+  if (!text || prepared.length === 0) {
+    return text;
+  }
+
+  let out = '';
+  let index = 0;
+  while (index < text.length) {
+    if (isInsideUrl(text, index)) {
+      out += text.charAt(index);
+      index += 1;
+      continue;
+    }
+    const match = matchPeakAt(text, index, prepared);
+    if (!match) {
+      out += text.charAt(index);
+      index += 1;
+      continue;
+    }
+
+    const label = ` (${formatElevation(match.peak.elevationM)} m.n.p.m.)`;
+    const word = text.slice(index, match.end);
+    const boldWrapped = text.startsWith('**', match.end) && index >= 2 && text.slice(index - 2, index) === '**';
+    if (boldWrapped) {
+      const afterBold = match.end + 2;
+      const outside = followingElevationLength(text, afterBold);
+      if (outside > 0) {
+        out += `${word}**${label}`;
+        index = afterBold + outside;
+        continue;
+      }
+    }
+
+    const existing = followingElevationLength(text, match.end);
+    out += word + label;
+    index = match.end + existing;
+  }
+  return out;
+}
+
+function preparePeakElevations(
+  peaks: readonly GuidePeakElevation[],
+): Array<{ name: string; elevationM: number }> {
+  const byName = new Map<string, { name: string; elevationM: number }>();
+  for (const peak of peaks) {
+    const name = peak.name.trim();
+    const key = normalizePeakName(name);
+    if (key.length < 3 || byName.has(key)) {
+      continue;
+    }
+    if (!Number.isFinite(peak.elevationM) || peak.elevationM <= 0) {
+      continue;
+    }
+    byName.set(key, { name, elevationM: peak.elevationM });
+  }
+  return [...byName.values()].sort((left, right) => right.name.length - left.name.length);
+}
+
+function formatElevation(elevationM: number): string {
+  return String(Math.round(elevationM));
+}
+
+function matchPeakAt(
+  text: string,
+  index: number,
+  peaks: ReadonlyArray<{ name: string; elevationM: number }>,
+): { end: number; peak: { name: string; elevationM: number } } | undefined {
+  if (index > 0 && isWordChar(text.charAt(index - 1))) {
+    return undefined;
+  }
+  for (const peak of peaks) {
+    if (index + peak.name.length > text.length) {
+      continue;
+    }
+    const slice = text.slice(index, index + peak.name.length);
+    if (slice.localeCompare(peak.name, 'pl', { sensitivity: 'accent' }) !== 0) {
+      continue;
+    }
+    const suffixLength = inflectionSuffixLength(text.slice(index + peak.name.length));
+    if (suffixLength < 0) {
+      continue;
+    }
+    return { end: index + peak.name.length + suffixLength, peak };
+  }
+  return undefined;
+}
+
+function inflectionSuffixLength(rest: string): number {
+  for (const suffix of INFLECTION_SUFFIXES) {
+    if (suffix.length > 0 && !startsWithFold(rest, suffix)) {
+      continue;
+    }
+    if (!isWordChar(rest.charAt(suffix.length))) {
+      return suffix.length;
+    }
+  }
+  return -1;
+}
+
+function startsWithFold(text: string, prefix: string): boolean {
+  return text.slice(0, prefix.length).localeCompare(prefix, 'pl', { sensitivity: 'accent' }) === 0;
+}
+
+function isWordChar(char: string): boolean {
+  return char !== '' && /[\p{L}\p{N}]/u.test(char);
+}
+
+function followingElevationLength(text: string, from: number): number {
+  const slice = text.slice(from);
+  return (
+    PAREN_ELEVATION.exec(slice)?.[0].length ??
+    DASH_ELEVATION.exec(slice)?.[0].length ??
+    BARE_ELEVATION.exec(slice)?.[0].length ??
+    0
+  );
+}
+
+function isInsideUrl(text: string, index: number): boolean {
+  const from = text.lastIndexOf('https://', index);
+  if (from < 0 || from >= index) {
+    return false;
+  }
+  return !/\s/.test(text.slice(from, index));
+}
+
 export function buildUrlTitleMap(sources: GuideSource[]): Map<string, string> {
   const map = new Map<string, string>();
   for (const source of sources) {
     const url = (source.url ?? '').trim();
-    if (!url.startsWith('https://trailon.pl/')) {
+    if (!url.startsWith('https://trailon.pl/') && !isMountainIndustryUrl(url)) {
       continue;
     }
     const title = (source.title ?? '').trim();
@@ -260,7 +407,7 @@ type InlineToken =
 function tokenizeInlineParagraph(paragraph: string): InlineToken[] {
   let normalized = paragraph.replace(MARKDOWN_LINK_PATTERN, (_match, _label: string, url: string) => url);
   const pattern = new RegExp(
-    `${BOLD_PATTERN.source}|${TRAILON_URL_PATTERN.source}`,
+    `${BOLD_PATTERN.source}|${TRAILON_URL_PATTERN.source}|${mountainIndustryUrlSource()}`,
     'gi',
   );
   const tokens: InlineToken[] = [];
@@ -275,7 +422,9 @@ function tokenizeInlineParagraph(paragraph: string): InlineToken[] {
     if (full.startsWith('**') && full.endsWith('**')) {
       tokens.push({ kind: 'bold', value: full.slice(2, -2) });
     } else {
-      const { href, suffix } = trimUrlTrailingPunctuation(full);
+      const { href, suffix } = full.startsWith('https://trailon.pl/')
+        ? trimUrlTrailingPunctuation(full)
+        : trimGenericHttpsUrl(full);
       tokens.push({ kind: 'link', url: href });
       if (suffix) {
         tokens.push({ kind: 'text', value: suffix });
@@ -305,7 +454,10 @@ export function formatInlineParagraphToHtml(
       }
       const normalized = normalizeTrailonUrl(token.url);
       const title =
-        urlTitles.get(normalized) ?? resolveTitle?.(token.url) ?? titleFromTrailonUrl(token.url);
+        urlTitles.get(normalized) ??
+        resolveTitle?.(token.url) ??
+        industrySourceLabel(token.url) ??
+        (token.url.startsWith('https://trailon.pl/') ? titleFromTrailonUrl(token.url) : 'Źródło');
       return trailonGuideAnchor(token.url, title);
     })
     .join('');

@@ -45,3 +45,14 @@ export type CompletionStreamEvent =
 export interface EmbedOptions {
   dimensions?: number;
 }
+
+export interface WebSearchHit {
+  title: string;
+  url: string;
+}
+
+export interface WebSearchResult {
+  text: string;
+  hits: WebSearchHit[];
+  usage?: TokenUsage;
+}
